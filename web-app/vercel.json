@@ -1,8 +1,8 @@
 {
-  "buildCommand": "npm run build",
+  "buildCommand": "pnpm build",
   "outputDirectory": ".next",
   "framework": "nextjs",
-  "installCommand": "npm install",
+  "installCommand": "pnpm install",
   "env": {
     "PYTHON_API_URL": "",
     "DATABASE_PATH": "/tmp/example.sqlite",
