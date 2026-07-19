@@ -1,0 +1,17 @@
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": ".next",
+  "framework": "nextjs",
+  "installCommand": "npm install",
+  "env": {
+    "PYTHON_API_URL": "",
+    "DATABASE_PATH": "/tmp/example.sqlite",
+    "CACHE_TTL": "86400"
+  },
+  "functions": {
+    "app/api/**/*.ts": {
+      "runtime": "@vercel/node@3.0.0",
+      "maxDuration": 10
+    }
+  }
+}
