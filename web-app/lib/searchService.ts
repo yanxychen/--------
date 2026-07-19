@@ -16,7 +16,7 @@ export interface Case {
     marketValue: number;
     unitPrice: number;
     source: string;
-    sourceText: string;
+    sourceText?: string;
     remark: string;
     priceType: string;
     auctionRecords: AuctionRecord[];

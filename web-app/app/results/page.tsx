@@ -3,37 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import ResultTable from '@/components/ResultTable';
-
-interface Case {
-    id: string;
-    referenceLocation: string;
-    landArea: string;
-    buildingArea: number;
-    marketValue: number;
-    unitPrice: number;
-    source: string;
-    sourceText: string;
-    remark: string;
-    priceType: string;
-    priceAnomaly?: 'high' | 'low' | null;
-    isSelfAuction?: boolean;
-    score?: number;
-    distanceKm?: number;
-    startDate?: string;
-    link?: string;
-}
-
-interface SearchResponse {
-    success: boolean;
-    message: string;
-    data: Case[];
-    total: number;
-    cacheHit: boolean;
-    top3?: Case[];
-    allCases?: Case[];
-    selfAuctionCount?: number;
-    totalCount?: number;
-}
+import type { Case, SearchResponse } from '@/lib/searchService';
 
 export default function ResultsPage() {
     const router = useRouter();
