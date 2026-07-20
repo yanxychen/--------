@@ -1,9 +1,8 @@
 {
-  "buildCommand": "pnpm build",
-  "outputDirectory": ".next",
   "framework": "nextjs",
-  "installCommand": "pnpm install",
-  "rootDirectory": "web-app",
+  "buildCommand": "cd web-app && npm install && npm run build",
+  "outputDirectory": "web-app/.next",
+  "installCommand": "echo skip",
   "env": {
     "PYTHON_API_URL": "",
     "CACHE_TTL": "86400"
