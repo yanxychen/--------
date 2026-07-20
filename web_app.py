@@ -1,9 +1,20 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+不良资产估值参考案例搜索工具 - 后端API (Render兼容版)
+
+适配前端 searchService.ts 的接口契约：
+- POST /api/search → {status, top3, all_cases, self_auction_count, total_count}
+- GET /api/health → {status, timestamp}
+"""
+
 import os
 import sys
-from flask import Flask, request, jsonify, send_file
-import threading
-from datetime import datetime
 import json
+import time
+from datetime import datetime
+from flask import Flask, request, jsonify
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -14,58 +25,361 @@ OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'output')
 if not os.path.exists(OUTPUT_DIR):
     os.makedirs(OUTPUT_DIR)
 
-def run_search(address, property_type, area=None):
-    try:
-        from asset_search_api import search_cases
-        result = search_cases(address, property_type, area)
-        return result
-    except Exception as e:
-        print(f"搜索失败: {e}")
-        return None
 
-@app.route('/api/valuate', methods=['POST'])
-def valuate():
+def map_raw_to_v1(raw_item, platform, index):
+    """
+    将原始搜索结果映射为前端 convertPythonCaseToCase 能识别的 V1 格式字段名。
+    前端 converter 支持多种字段名变体，这里同时提供 V1 中文名和英文名。
+    """
+    title = raw_item.get('title', '')
+    address = raw_item.get('address', '')
+    link = raw_item.get('link', '')
+    item_id = raw_item.get('item_id', '')
+    source_text = '京东拍卖' if platform == 'jd' else '淘宝司法拍卖'
+
+    # 价格处理
+    current_price = raw_item.get('current_price', '')
+    start_price = raw_item.get('start_price', '')
+
+    # 尝试从价格字符串提取数值
+    def parse_price_str(p):
+        if not p:
+            return 0.0
+        try:
+            # 去掉单位文字
+            s = str(p).replace('万元', '').replace('万', '').replace('元', '')
+            s = s.replace(',', '').replace('，', '').strip()
+            val = float(s)
+            if '万' in str(p):
+                val *= 10000
+            return val
+        except:
+            return 0.0
+
+    price_val = parse_price_str(current_price)
+    start_price_val = parse_price_str(start_price)
+
+    # 面积（从搜索结果的 area 字段提取）
+    area_str = raw_item.get('area', '')
+    building_area = 0.0
+    if area_str:
+        try:
+            s = str(area_str).replace('㎡', '').replace('平方米', '').replace('平', '').replace(',', '').strip()
+            building_area = float(s)
+        except:
+            pass
+
+    # 单价（如果有总价和面积，计算单价）
+    unit_price = 0.0
+    if price_val > 0 and building_area > 0:
+        unit_price = price_val / building_area
+
+    # 市场价值（万元） - 用起拍价或当前价估算
+    market_value_wan = 0.0
+    if price_val > 0:
+        market_value_wan = price_val / 10000  # 转万元
+    elif start_price_val > 0:
+        market_value_wan = start_price_val / 10000
+
+    # 参照物位置：用标题或地址
+    ref_location = title if title else address
+
+    # 备注
+    remark_parts = []
+    if start_price_val > 0:
+        remark_parts.append(f"起拍价：{start_price_val:,.0f}元")
+    if price_val > 0 and price_val != start_price_val:
+        remark_parts.append(f"当前价：{price_val:,.0f}元")
+    remark = '；'.join(remark_parts) if remark_parts else ''
+
+    # 拍卖轮次
+    auction_records = []
+    stage = raw_item.get('current_stage', '') or raw_item.get('stage', '')
+    status = raw_item.get('status', '')
+    if stage or status:
+        auction_records.append({
+            'round': stage or '一拍',
+            'date': '',
+            'startPrice': start_price_val,
+            'endPrice': price_val if status in ['已成交', '成交成功'] else 0,
+            'status': status or '未知',
+        })
+
+    # 构建返回对象 - 同时提供 V1 中文字段名和英文字段名
+    # 前端 convertPythonCaseToCase 会按优先级尝试各种字段名
+    v1_case = {
+        # V1 中文格式字段（前端 converter 的主要识别格式）
+        '参照物位置': ref_location,
+        '建筑面积(m²)': str(building_area) if building_area > 0 else '不适用',
+        '土地面积(m²)': '不适用',
+        '市场价值(万元)': str(round(market_value_wan, 2)) if market_value_wan > 0 else '不适用',
+        '建筑单价(元/㎡)': str(round(unit_price, 2)) if unit_price > 0 else '不适用',
+        '数据来源': source_text,
+        '数据来源_链接': link,
+        '备注': remark,
+        '价格类型': '普通司法拍卖',
+
+        # 英文字段名（前端 converter 的备用识别格式）
+        'referenceLocation': ref_location,
+        'buildingArea': building_area,
+        'building_area': building_area,
+        'land_area': 0,
+        'marketValue': market_value_wan,
+        'market_value': market_value_wan,
+        'unitPrice': unit_price,
+        'unit_price': unit_price,
+        'address': address,
+        'link': link,
+        'source': link,
+        'source_link': link,
+        'source_text': source_text,
+        'remark': remark,
+        'priceType': '普通司法拍卖',
+        'price_type': '普通司法拍卖',
+        'item_id': item_id,
+
+        # 拍卖记录
+        'auctionRecords': auction_records,
+        'auction_records': auction_records,
+
+        # 元信息
+        'platform': platform,
+        'score': 50,  # 默认评分
+        'distance_km': None,
+        'is_self_auction': False,
+        'price_anomaly': None,
+    }
+
+    # 如果有详情数据（来自 get_taobao_detail），覆盖上面字段
+    detail = raw_item.get('detail', {})
+    if detail and detail.get('success'):
+        if detail.get('building_area', 0) > 0:
+            v1_case['建筑面积(m²)'] = str(detail['building_area'])
+            v1_case['buildingArea'] = detail['building_area']
+            v1_case['building_area'] = detail['building_area']
+        if detail.get('address'):
+            v1_case['address'] = detail['address']
+            # 更新参照物位置
+            if not title:
+                v1_case['参照物位置'] = detail['address']
+                v1_case['referenceLocation'] = detail['address']
+        if detail.get('deal_price', 0) > 0:
+            v1_case['市场价值(万元)'] = str(round(detail['deal_price'] / 10000, 2))
+            v1_case['marketValue'] = detail['deal_price'] / 10000
+            v1_case['market_value'] = detail['deal_price'] / 10000
+        elif detail.get('start_price', 0) > 0:
+            v1_case['市场价值(万元)'] = str(round(detail['start_price'] / 10000, 2))
+            v1_case['marketValue'] = detail['start_price'] / 10000
+            v1_case['market_value'] = detail['start_price'] / 10000
+        # 单价
+        if detail.get('deal_price', 0) > 0 and detail.get('building_area', 0) > 0:
+            v1_case['建筑单价(元/㎡)'] = str(round(detail['deal_price'] / detail['building_area'], 2))
+            v1_case['unitPrice'] = detail['deal_price'] / detail['building_area']
+            v1_case['unit_price'] = detail['deal_price'] / detail['building_area']
+        elif detail.get('start_price', 0) > 0 and detail.get('building_area', 0) > 0:
+            v1_case['建筑单价(元/㎡)'] = str(round(detail['start_price'] / detail['building_area'], 2))
+            v1_case['unitPrice'] = detail['start_price'] / detail['building_area']
+            v1_case['unit_price'] = detail['start_price'] / detail['building_area']
+        # 状态
+        if detail.get('current_stage'):
+            v1_case['auctionRecords'] = [{
+                'round': detail['current_stage'],
+                'date': str(detail.get('start_date', '')) if detail.get('start_date') else '',
+                'startPrice': detail.get('start_price', 0),
+                'endPrice': detail.get('deal_price', 0) if detail.get('status') == '已成交' else 0,
+                'status': detail.get('status', '未知'),
+            }]
+            v1_case['auction_records'] = v1_case['auctionRecords']
+        # 备注
+        remark_d = []
+        if detail.get('current_stage'):
+            remark_d.append(f"{detail['current_stage']}")
+        if detail.get('start_price', 0) > 0:
+            remark_d.append(f"起拍价：{detail['start_price']:,.0f}元")
+        if detail.get('deal_price', 0) > 0 and detail.get('status') == '已成交':
+            remark_d.append(f"成交价：{detail['deal_price']:,.0f}元")
+        if detail.get('status'):
+            remark_d.append(f"状态：{detail['status']}")
+        if remark_d:
+            v1_case['备注'] = '；'.join(remark_d)
+            v1_case['remark'] = v1_case['备注']
+
+    return v1_case
+
+
+def fetch_detail_for_item(searcher, item, platform):
+    """为单个搜索结果抓取详情页数据（仅淘宝支持）"""
+    if platform == 'taobao' and item.get('item_id'):
+        try:
+            detail = searcher.get_taobao_detail(item['item_id'])
+            item['detail'] = detail
+        except Exception as e:
+            print(f"详情抓取失败 {item.get('item_id')}: {e}")
+            item['detail'] = {'success': False, 'error': str(e)}
+    return item
+
+
+def run_search(address, property_type, area=None):
+    """
+    执行搜索并返回前端期望的格式:
+    {status, top3, all_cases, self_auction_count, total_count}
+    """
+    try:
+        from asset_search_api import UnifiedAuctionSearcher
+
+        # 资产类型映射 (前端用英文，后端用中文)
+        type_map = {
+            'residential': '住宅',
+            'commercial': '商业',
+            'other': '特殊',
+        }
+        asset_type_cn = type_map.get(property_type, property_type)
+        if asset_type_cn not in ['住宅', '商业', '工业', '特殊']:
+            asset_type_cn = '商业'
+
+        searcher = UnifiedAuctionSearcher()
+
+        # Step 1: 搜索
+        all_raw = searcher.search_all(address, platforms=['jd', 'taobao'])
+
+        # 去重
+        unique_raw = []
+        seen_links = set()
+        for item in all_raw:
+            link = item.get('link', '')
+            if link not in seen_links:
+                seen_links.add(link)
+                unique_raw.append(item)
+
+        # Step 2: 为淘宝结果抓取详情 (最多10个，并行)
+        taobao_items = [i for i in unique_raw if i.get('platform') == 'taobao']
+        fetch_limit = min(10, len(taobao_items))
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = []
+            for i in range(fetch_limit):
+                futures.append(executor.submit(fetch_detail_for_item, searcher, taobao_items[i], 'taobao'))
+            for future in as_completed(futures, timeout=60):
+                try:
+                    future.result()
+                except Exception as e:
+                    print(f"详情线程异常: {e}")
+
+        # Step 3: 映射为 V1 格式
+        v1_cases = []
+        for idx, raw in enumerate(unique_raw):
+            platform = raw.get('platform', 'unknown')
+            v1_case = map_raw_to_v1(raw, platform, idx)
+            v1_cases.append(v1_case)
+
+        # Step 4: 排序 - 有建筑面积和价格的结果优先
+        def case_sort_key(c):
+            area = c.get('buildingArea', 0) or c.get('building_area', 0) or 0
+            price = c.get('marketValue', 0) or c.get('market_value', 0) or 0
+            detail_success = c.get('detail', {}).get('success', False) if isinstance(c.get('detail'), dict) else False
+            # 有详情的排前面，有面积价格的排前面
+            return (-1 if detail_success else 0, -1 if area > 0 else 0, -1 if price > 0 else 0, -idx)
+
+        v1_cases.sort(key=case_sort_key)
+
+        top3 = v1_cases[:3]
+        all_cases = v1_cases
+
+        # 自身拍卖检测（简单版）
+        self_auction_ids = set()
+        for case in all_cases:
+            case_addr = case.get('address', '') or ''
+            if address in case_addr and len(address) > 5:
+                case['is_self_auction'] = True
+                case['is_self_auction'] = True
+                self_auction_ids.add(case.get('item_id', ''))
+
+        searcher.cleanup()
+
+        return {
+            'status': 'success',
+            'top3': top3,
+            'all_cases': all_cases,
+            'self_auction_count': len(self_auction_ids),
+            'total_count': len(all_cases),
+        }
+
+    except Exception as e:
+        print(f"搜索异常: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            'status': 'error',
+            'top3': [],
+            'all_cases': [],
+            'self_auction_count': 0,
+            'total_count': 0,
+            'error': str(e),
+        }
+
+
+@app.route('/api/search', methods=['POST'])
+def search():
+    """前端调用的主搜索接口"""
     try:
         data = request.get_json()
         address = data.get('address', '')
-        property_type = data.get('propertyType', 'commercial')
-        area = data.get('area')
-        
+        property_type = data.get('asset_type', data.get('propertyType', 'commercial'))
+        area = data.get('building_area', data.get('area'))
+
         if not address:
             return jsonify({
-                'success': False,
-                'message': '地址不能为空',
-                'data': []
+                'status': 'error',
+                'top3': [],
+                'all_cases': [],
+                'self_auction_count': 0,
+                'total_count': 0,
+                'error': '地址不能为空',
             }), 400
-        
-        print(f"收到搜索请求: {address}, 类型: {property_type}, 面积: {area}")
-        
-        search_result = run_search(address, property_type, area)
-        
-        if search_result:
-            return jsonify(search_result)
-        else:
-            return jsonify({
-                'success': False,
-                'message': '搜索失败，请稍后重试',
-                'data': []
-            }), 500
-            
+
+        print(f"[API] 搜索请求: address={address}, type={property_type}, area={area}")
+        result = run_search(address, property_type, area)
+        return jsonify(result)
+
     except Exception as e:
-        print(f"API错误: {e}")
+        print(f"[API] 错误: {e}")
         return jsonify({
-            'success': False,
-            'message': str(e),
-            'data': []
+            'status': 'error',
+            'top3': [],
+            'all_cases': [],
+            'self_auction_count': 0,
+            'total_count': 0,
+            'error': str(e),
         }), 500
+
+
+# 保留旧接口兼容性
+@app.route('/api/valuate', methods=['POST'])
+def valuate():
+    """旧版接口（兼容）"""
+    data = request.get_json()
+    address = data.get('address', '')
+    property_type = data.get('propertyType', 'commercial')
+    area = data.get('area')
+    result = run_search(address, property_type, area)
+    # 转换为旧格式
+    return jsonify({
+        'success': result['status'] == 'success',
+        'message': result.get('error', '搜索成功') if result['status'] != 'success' else '搜索成功',
+        'data': result.get('all_cases', []),
+        'total': result.get('total_count', 0),
+    })
+
 
 @app.route('/api/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok', 'timestamp': datetime.now().isoformat()})
 
+
 @app.route('/', methods=['GET'])
 def index():
     return "不良资产估值参考案例搜索服务 - API运行中"
+
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
