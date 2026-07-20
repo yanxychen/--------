@@ -1,0 +1,7 @@
+{
+  "framework": "nextjs",
+  "env": {
+    "PYTHON_API_URL": "",
+    "CACHE_TTL": "86400"
+  }
+}
