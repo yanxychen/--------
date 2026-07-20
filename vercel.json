@@ -1,18 +1,11 @@
 {
-  "buildCommand": "cd web-app && pnpm build",
-  "outputDirectory": "web-app/.next",
+  "buildCommand": "pnpm build",
+  "outputDirectory": ".next",
   "framework": "nextjs",
-  "installCommand": "cd web-app && pnpm install",
+  "installCommand": "pnpm install",
   "rootDirectory": "web-app",
   "env": {
     "PYTHON_API_URL": "",
-    "DATABASE_PATH": "/tmp/example.sqlite",
     "CACHE_TTL": "86400"
-  },
-  "functions": {
-    "web-app/app/api/**/*.ts": {
-      "runtime": "@vercel/node@3.0.0",
-      "maxDuration": 10
-    }
   }
 }
