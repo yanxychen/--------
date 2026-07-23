@@ -21,6 +21,26 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
+# CORS 支持 - 允许浏览器直接调用后端
+@app.after_request
+def add_cors_headers(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, ngrok-skip-browser-warning'
+    response.headers['Access-Control-Max-Age'] = '86400'
+    return response
+
+@app.route('/api/search', methods=['OPTIONS'])
+@app.route('/api/valuate', methods=['OPTIONS'])
+@app.route('/api/health', methods=['OPTIONS'])
+def cors_preflight():
+    resp = app.make_response(('', 204))
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    resp.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, ngrok-skip-browser-warning'
+    resp.headers['Access-Control-Max-Age'] = '86400'
+    return resp
+
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'output')
 if not os.path.exists(OUTPUT_DIR):
     os.makedirs(OUTPUT_DIR)
