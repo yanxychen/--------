@@ -258,10 +258,14 @@ def run_search(address, property_type, area=None):
             asset_type_cn = '商业'
 
         searcher = UnifiedAuctionSearcher()
-
-        # Step 1: 搜索
-        all_raw = searcher.search_all(address, platforms=['jd', 'taobao'])
-
+        
+        try:
+            # Step 1: 搜索
+            all_raw = searcher.search_all(address, platforms=['jd', 'taobao'])
+        except Exception as e:
+            print(f"搜索阶段异常: {e}")
+            all_raw = []
+        
         # 去重
         unique_raw = []
         seen_links = set()
