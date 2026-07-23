@@ -45,6 +45,7 @@ export interface SearchResponse {
     allCases?: Case[];
     selfAuctionCount?: number;
     totalCount?: number;
+    error?: string;
 }
 
 const MOCK_CASES: Case[] = [
@@ -191,15 +192,9 @@ export async function searchCases(request: SearchRequest): Promise<SearchRespons
     await cleanupExpiredCache();
     
     const addressKey = `${request.address}-${request.propertyType}`;
-    
-    // 先尝试从缓存获取（调试阶段先禁用，确保每次都是最新数据）
-    // const cached = await getCachedCases(addressKey);
-    // if (cached.length > 0) {
-    //     ...
-    // }
+    const PYTHON_API_URL = process.env.PYTHON_API_URL || 'https://npl-backed.onrender.com/api/search';
     
     try {
-        const PYTHON_API_URL = process.env.PYTHON_API_URL;
         if (PYTHON_API_URL) {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 600000);
@@ -210,65 +205,61 @@ export async function searchCases(request: SearchRequest): Promise<SearchRespons
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         address: request.address,
-                        asset_type: request.propertyType === 'residential' ? '住宅' 
-                            : request.propertyType === 'commercial' ? '商业' 
+                        asset_type: request.propertyType === 'residential' ? '住宅'
+                            : request.propertyType === 'commercial' ? '商业'
                             : '其他',
                         building_area: request.area,
                     }),
                     signal: controller.signal,
                 });
-                clearTimeout(timeoutId);
                 
-                if (response.ok) {
-                    const result = await response.json();
-                    if (result.status === 'success') {
-                        const top3Data = result.top3 || result.cases || [];
-                        const top3Cases = top3Data.map((c: any, i: number) => convertPythonCaseToCase(c, i));
-                        
-                        const allCasesData = result.all_cases || result.cases || [];
-                        const allCases = allCasesData.map((c: any, i: number) => convertPythonCaseToCase(c, i));
-                        
-                        await cacheCases(addressKey, allCases);
-                        await addSearchHistory(request.address, request.propertyType, request.area ?? null, allCases.length);
-                        
-                        return {
-                            success: true,
-                            message: '搜索成功',
-                            data: top3Cases,
-                            total: allCases.length,
-                            cacheHit: false,
-                            top3: top3Cases,
-                            allCases,
-                            selfAuctionCount: result.self_auction_count || 0,
-                            totalCount: result.total_count || allCases.length,
-                        };
-                    }
+                const result = await response.json();
+                
+                if (!result || result.status !== 'success') {
+                    return {
+                        success: false,
+                        message: result?.error || '搜索失败',
+                        data: [],
+                        total: 0,
+                        cacheHit: false,
+                        top3: [],
+                        allCases: [],
+                        selfAuctionCount: 0,
+                        totalCount: 0,
+                        error: result?.error || '搜索失败',
+                    };
                 }
+                
+                const top3Cases = (result.top3 || []).map((c: any, i: number) => convertPythonCaseToCase(c, i));
+                const allCases = (result.all_cases || []).map((c: any, i: number) => convertPythonCaseToCase(c, i));
+                
+                return {
+                    success: true,
+                    message: '搜索成功',
+                    data: top3Cases,
+                    total: allCases.length,
+                    cacheHit: false,
+                    top3: top3Cases,
+                    allCases,
+                    selfAuctionCount: result.self_auction_count || 0,
+                    totalCount: result.total_count || allCases.length,
+                };
             } finally {
                 clearTimeout(timeoutId);
             }
         }
         
-        const filteredCases = MOCK_CASES.map((c, i) => ({
-            ...c,
-            id: String(i + 1),
-            referenceLocation: `${i + 1}、商业用房-${request.address.slice(0, 20)}...`,
-            remark: c.remark.replace(/距离抵押物约[\d.]+(公里|米)/, `距离抵押物约${(0.8 + i * 0.3).toFixed(1)}公里`),
-        }));
-        
-        await cacheCases(addressKey, filteredCases);
-        await addSearchHistory(request.address, request.propertyType, request.area ?? null, filteredCases.length);
-        
         return {
-            success: true,
-            message: '搜索成功（演示数据）',
-            data: filteredCases,
-            total: filteredCases.length,
+            success: false,
+            message: '后端接口未配置',
+            data: [],
+            total: 0,
             cacheHit: false,
-            top3: filteredCases.slice(0, 3),
-            allCases: filteredCases,
+            top3: [],
+            allCases: [],
             selfAuctionCount: 0,
-            totalCount: filteredCases.length,
+            totalCount: 0,
+            error: 'PYTHON_API_URL 未配置',
         };
     } catch (error) {
         console.error('搜索失败:', error);
@@ -282,6 +273,7 @@ export async function searchCases(request: SearchRequest): Promise<SearchRespons
             allCases: [],
             selfAuctionCount: 0,
             totalCount: 0,
+            error: error instanceof Error ? error.message : String(error),
         };
     }
 }

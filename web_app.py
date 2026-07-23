@@ -323,10 +323,17 @@ def search():
     """前端调用的主搜索接口"""
     try:
         data = request.get_json()
-        address = data.get('address', '')
-        property_type = data.get('asset_type', data.get('propertyType', 'commercial'))
-        area = data.get('building_area', data.get('area'))
+        if not data:
+            return jsonify({
+                'status': 'error',
+                'top3': [],
+                'all_cases': [],
+                'self_auction_count': 0,
+                'total_count': 0,
+                'error': '请求体为空或不是有效的JSON',
+            }), 400
 
+        address = data.get('address', '')
         if not address:
             return jsonify({
                 'status': 'error',
@@ -337,19 +344,28 @@ def search():
                 'error': '地址不能为空',
             }), 400
 
+        property_type = data.get('asset_type', data.get('propertyType', 'commercial'))
+        area = data.get('building_area', data.get('area'))
+
         print(f"[API] 搜索请求: address={address}, type={property_type}, area={area}")
         result = run_search(address, property_type, area)
+
+        if result.get('status') != 'success':
+            print(f"[API] 搜索失败: {result.get('error', '未知错误')}")
+
         return jsonify(result)
 
     except Exception as e:
-        print(f"[API] 错误: {e}")
+        import traceback
+        traceback.print_exc()
+        print(f"[API] 未处理异常: {e}")
         return jsonify({
             'status': 'error',
             'top3': [],
             'all_cases': [],
             'self_auction_count': 0,
             'total_count': 0,
-            'error': str(e),
+            'error': f'服务器异常: {str(e)}',
         }), 500
 
 

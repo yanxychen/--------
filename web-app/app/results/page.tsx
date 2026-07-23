@@ -124,8 +124,15 @@ export default function ResultsPage() {
     if (error || !searchResult) {
         return (
             <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-                <div className="text-center">
-                    <p className="text-red-500 text-lg mb-4">{error || '未知错误'}</p>
+                <div className="text-center max-w-2xl px-4">
+                    <p className="text-red-500 text-lg mb-4 font-medium">
+                        {error || '未知错误'}
+                    </p>
+                    {searchResult?.error && (
+                        <p className="text-gray-500 text-sm mb-6 whitespace-pre-wrap">
+                            后端返回：{searchResult.error}
+                        </p>
+                    )}
                     <button
                         onClick={handleBack}
                         className="px-6 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700"
