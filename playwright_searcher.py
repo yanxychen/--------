@@ -178,6 +178,7 @@ class PlaywrightAuctionSearcher:
         for platform in platforms:
             if platform == 'taobao':
                 items = self.search_taobao(keyword)
+                self._enrich_with_details(items)
                 for item in items:
                     normalized = self._normalize(item, 'taobao')
                     all_results.append(normalized)
@@ -188,18 +189,64 @@ class PlaywrightAuctionSearcher:
                     all_results.append(normalized)
         return all_results
 
+    def _enrich_with_details(self, items: List[Dict], max_items: int = 5):
+        """打开详情页提取面积、价格等核心数据"""
+        for item in items[:max_items]:
+            item_id = item.get('item_id', '')
+            link = item.get('link', '')
+            if not item_id and not link:
+                continue
+            detail_url = link or f"https://sf-item.taobao.com/sf_item/{item_id}.htm"
+            try:
+                print(f"  [Playwright] 抓取详情: {detail_url}")
+                page = self._new_page()
+                page.goto(detail_url, wait_until='networkidle', timeout=25000)
+                page.wait_for_timeout(2000)
+                
+                # 提取页面文本
+                text = page.inner_text('body')
+                
+                # 解析面积
+                area_match = re.search(r'建筑面积[：:]\s*([\d,]+\.?\d*)\s*[㎡平方米]', text)
+                if not area_match:
+                    area_match = re.search(r'([\d,]+\.?\d*)\s*㎡', text)
+                if area_match:
+                    item['building_area'] = float(area_match.group(1).replace(',', ''))
+                
+                # 解析价格
+                price_match = re.search(r'起拍价[：:]\s*([\d,]+\.?\d*)', text)
+                if price_match:
+                    item['current_price_yuan'] = float(price_match.group(1).replace(',', ''))
+                
+                # 解析地址
+                addr_match = re.search(r'标的地址[：:]\s*(.+?)(?:\n|$)', text)
+                if addr_match:
+                    item['address'] = addr_match.group(1).strip()
+                
+                print(f"    → 面积:{item.get('building_area',0)} ㎡, 价格:{item.get('current_price_yuan',0)} 元")
+                page.context.close()
+            except Exception as e:
+                print(f"    [Playwright] 详情抓取失败: {e}")
+                try:
+                    page.context.close()
+                except:
+                    pass
+
     @staticmethod
     def _normalize(item: Dict, platform: str) -> Dict:
         """标准化输出"""
+        building_area = item.get('building_area', 0) or 0
+        price_yuan = item.get('current_price_yuan', 0) or 0
+        
         return {
             'title': item.get('title', ''),
             'item_id': item.get('item_id', ''),
             'link': item.get('link', ''),
             'current_price': item.get('current_price', ''),
-            'current_price_yuan': 0,
+            'current_price_yuan': price_yuan,
             'address': item.get('address', ''),
             'area': item.get('area', ''),
-            'building_area': 0,
-            'status': '',
+            'building_area': float(building_area) if building_area else 0,
+            'status': item.get('status', ''),
             'platform': platform,
         }

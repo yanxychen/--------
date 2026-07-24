@@ -415,6 +415,24 @@ def valuate():
 def health():
     return jsonify({'status': 'ok', 'timestamp': datetime.now().isoformat()})
 
+@app.route('/api/debug', methods=['GET'])
+def debug():
+    """调试接口 - 测试各模块是否可用"""
+    deps = {}
+    try:
+        import playwright
+        deps['playwright'] = 'ok'
+        from playwright.sync_api import sync_playwright
+        deps['playwright_api'] = 'ok'
+    except Exception as e:
+        deps['playwright'] = str(e)
+    try:
+        import playwright_searcher
+        deps['playwright_searcher'] = 'ok'
+    except Exception as e:
+        deps['playwright_searcher'] = str(e)
+    return jsonify(deps)
+
 
 @app.route('/', methods=['GET'])
 def index():
