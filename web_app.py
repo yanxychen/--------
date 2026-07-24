@@ -37,6 +37,7 @@ def add_cors_headers(response):
 @app.route('/api/search', methods=['OPTIONS'])
 @app.route('/api/valuate', methods=['OPTIONS'])
 @app.route('/api/health', methods=['OPTIONS'])
+@app.route('/api/export', methods=['OPTIONS'])
 def cors_preflight():
     resp = app.make_response(('', 204))
     resp.headers['Access-Control-Allow-Origin'] = '*'
@@ -480,8 +481,10 @@ def index():
 @app.route('/api/export', methods=['POST'])
 def export_excel():
     try:
-        data = request.get_json()
-        cases = data.get('cases', [])
+        data = request.get_json(silent=True, force=True)
+        if data is None:
+            return jsonify({'success': False, 'message': '无效的JSON请求体'}), 400
+        cases = data.get('cases', data.get('all_cases', []))
         if not cases:
             return jsonify({'success': False, 'message': '没有可导出的数据'}), 400
 
