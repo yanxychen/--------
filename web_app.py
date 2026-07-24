@@ -56,6 +56,20 @@ def map_raw_to_v1(raw_item, platform, index):
     link = raw_item.get('link', '')
     item_id = raw_item.get('item_id', '')
     source_text = '京东拍卖' if platform == 'jd' else '淘宝司法拍卖'
+    
+    # ★ 链接修复：无效链接→生成平台搜索链接
+    if not link or link.endswith('?id=') or link.endswith('?id') or link == '':
+        title = raw_item.get('title', '')
+        search_kw = title[:30] if title else raw_item.get('address', '')[:30]
+        if search_kw:
+            from urllib.parse import quote_plus
+            encoded = quote_plus(search_kw)
+            if platform == 'jd':
+                link = f'https://auction.jd.com/s/list.html?keyword={encoded}'
+            else:
+                link = f'https://sf.taobao.com/item/list.htm?q={encoded}'
+        elif item_id:
+            link = f'https://sf.taobao.com/sf_item/{item_id}.htm'
 
     # 价格处理
     current_price = raw_item.get('current_price', '')
