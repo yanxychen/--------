@@ -274,51 +274,39 @@ def fetch_detail_for_item(item, platform):
 
 
 def _expand_keywords(address: str) -> list:
-    """将抵押物地址拆分成由近到远的分层关键词"""
-    # 先清理地址中的特殊字符
+    """将抵押物地址拆分成由近到远的分层关键词（策略A）"""
     addr = address.strip()
-    # 常见行政区划后缀
     districts = ['区', '市', '县', '镇', '街道', '乡']
-    keywords = [addr]  # 第1层：完整地址（最精确）
-
-    # 第2层：尝试提取小区/楼盘名
+    keywords = [addr]
     import re
-    # 尝试匹配小区/楼盘模式
     for sep in [' ', '，', ',', '、']:
         parts = addr.split(sep)
         if len(parts) > 1:
             main_part = parts[0].strip()
             if len(main_part) >= 2:
                 keywords.append(main_part)
-                break  # 只取第一个分隔符的分割
-
-    # 尝试从地址开头提取"XX市XX区"作为模糊关键词
+                break
     area_match = re.match(r'([\u4e00-\u9fff]{2,4}(?:市|区|县|州))', addr)
     if area_match:
         area = area_match.group(1)
         if area not in keywords:
             keywords.append(area)
-
-    # 第3层：提取"XX路"或"XX街道"
     road_match = re.search(r'[^\d]+路', addr)
     if road_match:
-        keywords.append(road_match.group())
-
-    # 第4层：提取行政区（XX区/XX市）
+        road = road_match.group()
+        if road not in keywords:
+            keywords.append(road)
     for d in districts:
         idx = addr.find(d)
         if idx > 0 and idx < len(addr) - 1:
             district = addr[:idx+len(d)]
-            keywords.append(district)
-
-    # 第5层：提取城市名（从市级行政区）
+            if district not in keywords:
+                keywords.append(district)
     city_match = re.search(r'(.+?[市州])', addr)
     if city_match:
         city = city_match.group(1)
         if city not in keywords:
             keywords.append(city)
-
-    # 去重并保留顺序
     seen = set()
     result = []
     for kw in keywords:
@@ -328,15 +316,73 @@ def _expand_keywords(address: str) -> list:
     return result
 
 
-def _search_items(address: str) -> list:
-    """分层搜索：由近到远逐层搜淘宝/京东，去重合并"""
-    all_raw = []
-    keywords = _expand_keywords(address)
-    seen_links = set()
+def _expand_keywords_b(address: str) -> list:
+    """使用高德API定位抵押物周边POI提取关键词（策略B）"""
+    import re, json, urllib.request, urllib.parse
+    amap_key = os.environ.get('AMAP_API_KEY', 'd7d06a2c20dacd8c861173b82cf70d71')
+    keywords = [address]
 
+    # 提取城市名用于POI搜索
+    city = address
+    city_match = re.search(r'(.+?[市州])', address)
+    if city_match:
+        city = city_match.group(1)
+
+    # 提取地址中的核心关键词用于POI搜索
+    poi_hints = []
+    # 小区/楼盘名
+    for sep in [' ', '，', ',', '、']:
+        parts = address.split(sep)
+        if len(parts) > 1:
+            poi_hints.append(parts[0].strip())
+    # 路段
+    road_match = re.search(r'([\u4e00-\u9fff]+(?:路|街|大道))', address)
+    if road_match:
+        poi_hints.append(road_match.group(1))
+
+    # 用POI文本搜索获取附近地标
+    try:
+        for hint in poi_hints[:2]:  # 最多2个POI关键词
+            url = f"https://restapi.amap.com/v3/place/text?key={amap_key}&keywords={urllib.parse.quote(hint)}&city={urllib.parse.quote(city)}&offset=3"
+            req = urllib.request.Request(url)
+            resp = urllib.request.urlopen(req, timeout=5)
+            data = json.loads(resp.read().decode())
+            if data.get('status') == '1' and data.get('pois'):
+                for poi in data['pois']:
+                    name = poi.get('name', '')
+                    location = poi.get('location', '')
+                    if name and location:
+                        # 用这个POI坐标做周边搜索，找到更多POI
+                        around_url = f"https://restapi.amap.com/v3/place/around?key={amap_key}&location={location}&radius=500&offset=10"
+                        req2 = urllib.request.Request(around_url)
+                        resp2 = urllib.request.urlopen(req2, timeout=5)
+                        around_data = json.loads(resp2.read().decode())
+                        if around_data.get('status') == '1' and around_data.get('pois'):
+                            for poi2 in around_data['pois']:
+                                pname = poi2.get('name', '').strip()
+                                if pname and len(pname) >= 2 and ' ' not in pname:
+                                    # 提取有意义的POI名称作为关键词（排除品牌连锁店名）
+                                    if not any(skip in pname for skip in ['星巴克', '麦当劳', '肯德基', '7-11']):
+                                        keywords.append(pname)
+    except Exception as e:
+        print(f"高德API搜索失败: {e}")
+
+    # 去重
+    seen = set()
+    result = []
+    for kw in keywords:
+        if kw not in seen:
+            seen.add(kw)
+            result.append(kw)
+    return result
+
+
+def _search_with_keywords(keywords: list) -> list:
+    """用关键词列表搜索拍卖案例，去重合并"""
     from asset_search_api import UnifiedAuctionSearcher
     searcher = UnifiedAuctionSearcher()
-
+    all_raw = []
+    seen_links = set()
     for kw in keywords:
         try:
             items = searcher.search_all(kw, platforms=['jd', 'taobao'])
@@ -344,33 +390,79 @@ def _search_items(address: str) -> list:
                 link = item.get('link', '')
                 if link and link not in seen_links:
                     seen_links.add(link)
-                    item['searchKeyword'] = kw  # 标记是哪个关键词搜到的
                     all_raw.append(item)
-            if len(all_raw) >= 30:  # 够了就不搜更宽泛的关键词了
+            if len(all_raw) >= 30:
                 break
         except Exception as e:
             print(f"关键词 '{kw}' 搜索失败: {e}")
-
     searcher.cleanup()
-
-    # 如果API搜不到结果，fallback到Playwright
-    if not all_raw:
-        try:
-            from playwright_searcher import PlaywrightAuctionSearcher
-            pw = PlaywrightAuctionSearcher()
-            for kw in keywords[:3]:  # Playwright只搜前三层
-                items = pw.search_all(kw, platforms=['taobao', 'jd'])
-                for item in items:
-                    link = item.get('link', '')
-                    if link and link not in seen_links:
-                        seen_links.add(link)
-                        item['searchKeyword'] = kw
-                        all_raw.append(item)
-            pw.stop()
-        except Exception as e:
-            print(f"Playwright 搜索也失败: {e}")
-
     return all_raw
+
+
+def _search_items(address: str) -> list:
+    """搜索入口：策略A（分层地址关键词）"""
+    return _search_with_keywords(_expand_keywords(address))
+
+
+def _search_items_b(address: str) -> list:
+    """搜索入口：策略B（高德API周边POI关键词）"""
+    return _search_with_keywords(_expand_keywords_b(address))
+
+
+@app.route('/api/abtest', methods=['POST'])
+def ab_test():
+    """A/B测试：比较两种搜索策略的结果"""
+    from datetime import datetime
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({'error': '缺少参数'}), 400
+    address = data.get('address', '')
+    asset_type = data.get('asset_type', '')
+
+    # 执行A策略
+    t0 = datetime.now()
+    items_a = _search_items(address)
+    ta = (datetime.now() - t0).total_seconds()
+    filtered_a = _filter_items(_dedup_items(items_a))
+
+    # 执行B策略
+    t0 = datetime.now()
+    items_b = _search_items_b(address)
+    tb = (datetime.now() - t0).total_seconds()
+    filtered_b = _filter_items(_dedup_items(items_b))
+
+    # 对比分析
+    links_a = {i.get('link','') for i in filtered_a}
+    links_b = {i.get('link','') for i in filtered_b}
+    overlap = links_a & links_b
+    only_a = links_a - links_b
+    only_b = links_b - links_a
+
+    return jsonify({
+        'address': address,
+        'strategy_a': {
+            'name': '分层地址关键词',
+            'keywords': _expand_keywords(address),
+            'total': len(items_a),
+            'filtered': len(filtered_a),
+            'time_sec': round(ta, 1),
+            'sample_titles': [i.get('title','')[:40] for i in filtered_a[:5]],
+        },
+        'strategy_b': {
+            'name': '高德API周边POI',
+            'keywords': _expand_keywords_b(address),
+            'total': len(items_b),
+            'filtered': len(filtered_b),
+            'time_sec': round(tb, 1),
+            'sample_titles': [i.get('title','')[:40] for i in filtered_b[:5]],
+        },
+        'comparison': {
+            'overlap': len(overlap),
+            'unique_to_a': len(only_a),
+            'unique_to_b': len(only_b),
+            'total_unique': len(filtered_a) + len(filtered_b) - len(overlap),
+        }
+    })
 
 
 def _dedup_items(items: list) -> list:
