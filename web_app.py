@@ -93,15 +93,27 @@ def map_raw_to_v1(raw_item, platform, index):
     price_val = parse_price_str(current_price)
     start_price_val = parse_price_str(start_price)
 
-    # 面积（从搜索结果的 area 字段提取）
-    area_str = raw_item.get('area', '')
+    # 面积
+    # 优先从 title 中提取（很多标题直接包含"建筑面积XX㎡"）
+    title = raw_item.get('title', '')
     building_area = 0.0
-    if area_str:
+    title_area = re.search(r'建筑面积[：:]?\s*([\d,]+\.?\d*)\s*[㎡平方米]', title)
+    if not title_area:
+        title_area = re.search(r'([\d,]+\.?\d*)\s*[㎡平方米]', title)
+    if title_area:
         try:
-            s = str(area_str).replace('㎡', '').replace('平方米', '').replace('平', '').replace(',', '').strip()
-            building_area = float(s)
+            building_area = float(title_area.group(1).replace(',', ''))
         except:
             pass
+    # 如果 title 没有，从 area 字段提取
+    if not building_area:
+        area_str = raw_item.get('area', '')
+        if area_str:
+            try:
+                s = str(area_str).replace('㎡', '').replace('平方米', '').replace('平', '').replace(',', '').strip()
+                building_area = float(s)
+            except:
+                pass
 
     # 单价（如果有总价和面积，计算单价）
     unit_price = 0.0
@@ -288,6 +300,17 @@ def run_search(address, property_type, area=None):
             if link not in seen_links:
                 seen_links.add(link)
                 unique_raw.append(item)
+        
+        # 过滤：排除明显不相关的非房产拍卖结果
+        exclude_kw = ['公开选聘', '审计机构', '破产清算', '招募公告', '租赁权公告', '服务采购']
+        filtered_raw = []
+        for item in unique_raw:
+            title = (item.get('title', '') or '')
+            if any(kw in title for kw in exclude_kw):
+                print(f"  过滤不相关: {title[:40]}")
+                continue
+            filtered_raw.append(item)
+        unique_raw = filtered_raw
 
         # Step 2: 为淘宝结果抓取详情 (最多10个，并行)
         taobao_items = [i for i in unique_raw if i.get('platform') == 'taobao']
