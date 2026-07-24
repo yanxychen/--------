@@ -273,25 +273,103 @@ def fetch_detail_for_item(item, platform):
     return item
 
 
-def _search_items(address: str) -> list:
-    """搜索：优先API，失败则Playwright回退"""
-    all_raw = []
-    try:
-        from asset_search_api import UnifiedAuctionSearcher
-        searcher = UnifiedAuctionSearcher()
-        all_raw = searcher.search_all(address, platforms=['jd', 'taobao'])
-        searcher.cleanup()
-    except Exception as e:
-        print(f"API 搜索失败: {e}")
+def _expand_keywords(address: str) -> list:
+    """将抵押物地址拆分成由近到远的分层关键词"""
+    # 先清理地址中的特殊字符
+    addr = address.strip()
+    # 常见行政区划后缀
+    districts = ['区', '市', '县', '镇', '街道', '乡']
+    keywords = [addr]  # 第1层：完整地址（最精确）
 
+    # 第2层：尝试提取小区/楼盘名
+    import re
+    # 尝试匹配小区/楼盘模式
+    for sep in [' ', '，', ',', '、']:
+        parts = addr.split(sep)
+        if len(parts) > 1:
+            main_part = parts[0].strip()
+            if len(main_part) >= 2:
+                keywords.append(main_part)
+                break  # 只取第一个分隔符的分割
+
+    # 尝试从地址开头提取"XX市XX区"作为模糊关键词
+    area_match = re.match(r'([\u4e00-\u9fff]{2,4}(?:市|区|县|州))', addr)
+    if area_match:
+        area = area_match.group(1)
+        if area not in keywords:
+            keywords.append(area)
+
+    # 第3层：提取"XX路"或"XX街道"
+    road_match = re.search(r'[^\d]+路', addr)
+    if road_match:
+        keywords.append(road_match.group())
+
+    # 第4层：提取行政区（XX区/XX市）
+    for d in districts:
+        idx = addr.find(d)
+        if idx > 0 and idx < len(addr) - 1:
+            district = addr[:idx+len(d)]
+            keywords.append(district)
+
+    # 第5层：提取城市名（从市级行政区）
+    city_match = re.search(r'(.+?[市州])', addr)
+    if city_match:
+        city = city_match.group(1)
+        if city not in keywords:
+            keywords.append(city)
+
+    # 去重并保留顺序
+    seen = set()
+    result = []
+    for kw in keywords:
+        if kw not in seen:
+            seen.add(kw)
+            result.append(kw)
+    return result
+
+
+def _search_items(address: str) -> list:
+    """分层搜索：由近到远逐层搜淘宝/京东，去重合并"""
+    all_raw = []
+    keywords = _expand_keywords(address)
+    seen_links = set()
+
+    from asset_search_api import UnifiedAuctionSearcher
+    searcher = UnifiedAuctionSearcher()
+
+    for kw in keywords:
+        try:
+            items = searcher.search_all(kw, platforms=['jd', 'taobao'])
+            for item in items:
+                link = item.get('link', '')
+                if link and link not in seen_links:
+                    seen_links.add(link)
+                    item['searchKeyword'] = kw  # 标记是哪个关键词搜到的
+                    all_raw.append(item)
+            if len(all_raw) >= 30:  # 够了就不搜更宽泛的关键词了
+                break
+        except Exception as e:
+            print(f"关键词 '{kw}' 搜索失败: {e}")
+
+    searcher.cleanup()
+
+    # 如果API搜不到结果，fallback到Playwright
     if not all_raw:
         try:
             from playwright_searcher import PlaywrightAuctionSearcher
             pw = PlaywrightAuctionSearcher()
-            all_raw = pw.search_all(address, platforms=['taobao', 'jd'])
+            for kw in keywords[:3]:  # Playwright只搜前三层
+                items = pw.search_all(kw, platforms=['taobao', 'jd'])
+                for item in items:
+                    link = item.get('link', '')
+                    if link and link not in seen_links:
+                        seen_links.add(link)
+                        item['searchKeyword'] = kw
+                        all_raw.append(item)
             pw.stop()
         except Exception as e:
             print(f"Playwright 搜索也失败: {e}")
+
     return all_raw
 
 
