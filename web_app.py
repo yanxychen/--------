@@ -134,7 +134,7 @@ def map_raw_to_v1(raw_item, platform, index):
         '土地面积(m²)': '不适用',
         '市场价值(万元)': str(round(market_value_wan, 2)) if market_value_wan > 0 else '不适用',
         '建筑单价(元/㎡)': str(round(unit_price, 2)) if unit_price > 0 else '不适用',
-        '数据来源': source_text,
+        '数据来源': link,  # ★ 完整URL（V1格式：数据来源存的是URL）
         '数据来源_链接': link,
         '备注': remark,
         '价格类型': '普通司法拍卖',
