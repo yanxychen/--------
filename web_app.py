@@ -274,24 +274,24 @@ def run_search(address, property_type, area=None):
     try:
         all_raw = []
         
-        # 优先使用 Playwright 浏览器搜索
+        # 优先使用 API 搜索（数据更完整，含价格信息）
         try:
-            from playwright_searcher import PlaywrightAuctionSearcher
-            pw = PlaywrightAuctionSearcher()
-            all_raw = pw.search_all(address, platforms=['taobao', 'jd'])
-            pw.stop()
+            from asset_search_api import UnifiedAuctionSearcher
+            searcher = UnifiedAuctionSearcher()
+            all_raw = searcher.search_all(address, platforms=['jd', 'taobao'])
+            searcher.cleanup()
         except Exception as e:
-            print(f"Playwright 搜索失败: {e}")
+            print(f"API 搜索失败: {e}")
         
-        # Playwright 没结果时，回退到API搜索
+        # API 没结果时，用 Playwright 浏览器搜索
         if not all_raw:
             try:
-                from asset_search_api import UnifiedAuctionSearcher
-                searcher = UnifiedAuctionSearcher()
-                all_raw = searcher.search_all(address, platforms=['jd', 'taobao'])
-                searcher.cleanup()
+                from playwright_searcher import PlaywrightAuctionSearcher
+                pw = PlaywrightAuctionSearcher()
+                all_raw = pw.search_all(address, platforms=['taobao', 'jd'])
+                pw.stop()
             except Exception as e:
-                print(f"API 搜索回退也失败: {e}")
+                print(f"Playwright 搜索也失败: {e}")
         
         # 去重
         unique_raw = []
