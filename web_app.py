@@ -481,9 +481,10 @@ def index():
 @app.route('/api/export', methods=['POST'])
 def export_excel():
     try:
-        data = request.get_json(silent=True, force=True)
-        if data is None:
-            return jsonify({'success': False, 'message': '无效的JSON请求体'}), 400
+        raw = request.get_data(as_text=True)
+        if not raw:
+            return jsonify({'success': False, 'message': '请求体为空'}), 400
+        data = json.loads(raw)
         cases = data.get('cases', data.get('all_cases', []))
         if not cases:
             return jsonify({'success': False, 'message': '没有可导出的数据'}), 400
