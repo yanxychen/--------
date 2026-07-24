@@ -237,11 +237,24 @@ class PlaywrightAuctionSearcher:
         """标准化输出"""
         building_area = item.get('building_area', 0) or 0
         price_yuan = item.get('current_price_yuan', 0) or 0
+        link = item.get('link', '') or ''
+        
+        # 如果链接为空且有item_id，生成淘宝链接
+        if not link and item.get('item_id'):
+            link = f"https://sf-item.taobao.com/sf_item/{item['item_id']}.htm"
+        # 如果链接仍是空或无效，生成平台搜索链接
+        if not link or link.endswith('?id=') or link.endswith('?id'):
+            search_kw = item.get('title', '')[:30] if item.get('title') else ''
+            from urllib.parse import quote_plus
+            if platform == 'taobao':
+                link = f"https://sf.taobao.com/item/list.htm?q={quote_plus(search_kw)}"
+            elif platform == 'jd':
+                link = f"https://auction.jd.com/s/list.html?keyword={quote_plus(search_kw)}"
         
         return {
             'title': item.get('title', ''),
             'item_id': item.get('item_id', ''),
-            'link': item.get('link', ''),
+            'link': link,
             'current_price': item.get('current_price', ''),
             'current_price_yuan': price_yuan,
             'address': item.get('address', ''),
