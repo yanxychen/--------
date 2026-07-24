@@ -15,9 +15,12 @@ import re
 import time
 from datetime import datetime
 from flask import Flask, request, jsonify
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+TAOBAO_CHROME_FETCHER_DIR = r"D:\宝宝课程资料"
+if os.path.exists(TAOBAO_CHROME_FETCHER_DIR) and TAOBAO_CHROME_FETCHER_DIR not in sys.path:
+    sys.path.insert(0, TAOBAO_CHROME_FETCHER_DIR)
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
@@ -243,6 +246,8 @@ def map_raw_to_v1(raw_item, platform, index):
             remark_d.append(f"{detail['current_stage']}")
         if detail.get('start_price', 0) > 0:
             remark_d.append(f"起拍价：{detail['start_price']:,.0f}元")
+        if detail.get('consult_price', 0) > 0:
+            remark_d.append(f"评估价：{detail['consult_price']:,.0f}元")
         if detail.get('deal_price', 0) > 0 and detail.get('status') == '已成交':
             remark_d.append(f"成交价：{detail['deal_price']:,.0f}元")
         if detail.get('status'):
@@ -254,135 +259,124 @@ def map_raw_to_v1(raw_item, platform, index):
     return v1_case
 
 
-def fetch_detail_for_item(searcher, item, platform):
+def fetch_detail_for_item(item, platform):
     """为单个搜索结果抓取详情页数据（仅淘宝支持）"""
     if platform == 'taobao' and item.get('item_id'):
         try:
-            detail = searcher.get_taobao_detail(item['item_id'])
+            from taobao_chrome_fetcher import get_taobao_detail_with_chrome
+            detail = get_taobao_detail_with_chrome(item['item_id'])
             item['detail'] = detail
         except Exception as e:
-            print(f"详情抓取失败 {item.get('item_id')}: {e}")
+            print(f"Chrome详情抓取失败 {item.get('item_id')}: {e}")
             item['detail'] = {'success': False, 'error': str(e)}
     return item
 
 
-def run_search(address, property_type, area=None):
-    """
-    执行搜索并返回前端期望的格式:
-    {status, top3, all_cases, self_auction_count, total_count}
-    """
+def _search_items(address: str) -> list:
+    """搜索：优先API，失败则Playwright回退"""
+    all_raw = []
     try:
-        all_raw = []
-        
-        # 优先使用 API 搜索（数据更完整，含价格信息）
-        try:
-            from asset_search_api import UnifiedAuctionSearcher
-            searcher = UnifiedAuctionSearcher()
-            all_raw = searcher.search_all(address, platforms=['jd', 'taobao'])
-            searcher.cleanup()
-        except Exception as e:
-            print(f"API 搜索失败: {e}")
-        
-        # API 没结果时，用 Playwright 浏览器搜索
-        if not all_raw:
-            try:
-                from playwright_searcher import PlaywrightAuctionSearcher
-                pw = PlaywrightAuctionSearcher()
-                all_raw = pw.search_all(address, platforms=['taobao', 'jd'])
-                pw.stop()
-            except Exception as e:
-                print(f"Playwright 搜索也失败: {e}")
-        
-        # 去重
-        unique_raw = []
-        seen_links = set()
-        for item in all_raw:
-            link = item.get('link', '')
-            if link not in seen_links:
-                seen_links.add(link)
-                unique_raw.append(item)
-        
-        # 过滤：排除明显不相关的非房产拍卖结果
-        exclude_kw = ['公开选聘', '审计机构', '破产清算', '招募公告', '租赁权公告', '服务采购']
-        filtered_raw = []
-        for item in unique_raw:
-            title = (item.get('title', '') or '')
-            if any(kw in title for kw in exclude_kw):
-                print(f"  过滤不相关: {title[:40]}")
-                continue
-            filtered_raw.append(item)
-        unique_raw = filtered_raw
-
-        # Step 2: 为淘宝结果抓取详情 (最多10个，并行)
-        taobao_items = [i for i in unique_raw if i.get('platform') == 'taobao']
-        fetch_limit = min(10, len(taobao_items))
-        if fetch_limit > 0:
-            try:
-                from asset_search_api import UnifiedAuctionSearcher
-                detail_searcher = UnifiedAuctionSearcher()
-                with ThreadPoolExecutor(max_workers=3) as executor:
-                    futures = []
-                    for i in range(fetch_limit):
-                        futures.append(executor.submit(fetch_detail_for_item, detail_searcher, taobao_items[i], 'taobao'))
-                    for future in as_completed(futures, timeout=60):
-                        try:
-                            future.result()
-                        except Exception as e:
-                            print(f"详情线程异常: {e}")
-                detail_searcher.cleanup()
-            except Exception as e:
-                print(f"详情抓取失败: {e}")
-
-        # Step 3: 映射为 V1 格式
-        v1_cases = []
-        for idx, raw in enumerate(unique_raw):
-            platform = raw.get('platform', 'unknown')
-            v1_case = map_raw_to_v1(raw, platform, idx)
-            v1_cases.append(v1_case)
-
-        # Step 4: 排序 - 有建筑面积和价格的结果优先
-        def case_sort_key(c):
-            area = c.get('buildingArea', 0) or c.get('building_area', 0) or 0
-            price = c.get('marketValue', 0) or c.get('market_value', 0) or 0
-            detail_success = c.get('detail', {}).get('success', False) if isinstance(c.get('detail'), dict) else False
-            # 有详情的排前面，有面积价格的排前面
-            return (-1 if detail_success else 0, -1 if area > 0 else 0, -1 if price > 0 else 0, -idx)
-
-        v1_cases.sort(key=case_sort_key)
-
-        top3 = v1_cases[:3]
-        all_cases = v1_cases
-
-        # 自身拍卖检测（简单版）
-        self_auction_ids = set()
-        for case in all_cases:
-            case_addr = case.get('address', '') or ''
-            if address in case_addr and len(address) > 5:
-                case['is_self_auction'] = True
-                case['is_self_auction'] = True
-                self_auction_ids.add(case.get('item_id', ''))
-
+        from asset_search_api import UnifiedAuctionSearcher
+        searcher = UnifiedAuctionSearcher()
+        all_raw = searcher.search_all(address, platforms=['jd', 'taobao'])
         searcher.cleanup()
+    except Exception as e:
+        print(f"API 搜索失败: {e}")
 
-        return {
-            'status': 'success',
-            'top3': top3,
-            'all_cases': all_cases,
-            'self_auction_count': len(self_auction_ids),
-            'total_count': len(all_cases),
-        }
+    if not all_raw:
+        try:
+            from playwright_searcher import PlaywrightAuctionSearcher
+            pw = PlaywrightAuctionSearcher()
+            all_raw = pw.search_all(address, platforms=['taobao', 'jd'])
+            pw.stop()
+        except Exception as e:
+            print(f"Playwright 搜索也失败: {e}")
+    return all_raw
 
+
+def _dedup_items(items: list) -> list:
+    """按链接去重"""
+    seen = set()
+    result = []
+    for item in items:
+        link = item.get('link', '')
+        if link not in seen:
+            seen.add(link)
+            result.append(item)
+    return result
+
+
+def _filter_items(items: list) -> list:
+    """排除明显不相关的非房产拍卖结果"""
+    exclude_kw = ['公开选聘', '审计机构', '破产清算', '招募公告', '租赁权公告', '服务采购']
+    kept = []
+    for item in items:
+        title = (item.get('title', '') or '')
+        if any(kw in title for kw in exclude_kw):
+            print(f"  过滤不相关: {title[:40]}")
+            continue
+        kept.append(item)
+    return kept
+
+
+def _enrich_details(items: list, max_items: int = 10):
+    """使用本机已登录 Chrome 抓取淘宝详情页（最多max_items条）"""
+    taobao_items = [i for i in items if i.get('platform') == 'taobao']
+    fetch_limit = min(max_items, len(taobao_items))
+    if fetch_limit == 0:
+        return
+    for i in range(fetch_limit):
+        fetch_detail_for_item(taobao_items[i], 'taobao')
+
+
+def _format_and_sort(raw_items: list, address: str) -> dict:
+    """转V1格式、排序、检测自身拍卖，返回前端期望格式"""
+    v1_cases = []
+    for idx, raw in enumerate(raw_items):
+        platform = raw.get('platform', 'unknown')
+        v1_case = map_raw_to_v1(raw, platform, idx)
+        v1_cases.append(v1_case)
+
+    v1_cases.sort(key=lambda c: (
+        -1 if isinstance(c.get('detail'), dict) and c['detail'].get('success') else 0,
+        -1 if (c.get('buildingArea', 0) or c.get('building_area', 0) or 0) > 0 else 0,
+        -1 if (c.get('marketValue', 0) or c.get('market_value', 0) or 0) > 0 else 0,
+    ))
+
+    top3 = v1_cases[:3]
+    self_auction_ids = set()
+    for case in v1_cases:
+        case_addr = case.get('address', '') or ''
+        if address in case_addr and len(address) > 5:
+            case['is_self_auction'] = True
+            self_auction_ids.add(case.get('item_id', ''))
+
+    return {
+        'status': 'success',
+        'top3': top3,
+        'all_cases': v1_cases,
+        'self_auction_count': len(self_auction_ids),
+        'total_count': len(v1_cases),
+    }
+
+
+def run_search(address, property_type=None, area=None):
+    """执行搜索并返回前端期望格式"""
+    try:
+        all_raw = _search_items(address)
+        unique_raw = _dedup_items(all_raw)
+        filtered_raw = _filter_items(unique_raw)
+        _enrich_details(filtered_raw)
+        return _format_and_sort(filtered_raw, address)
     except Exception as e:
         print(f"搜索异常: {e}")
         import traceback
         traceback.print_exc()
         return {
             'status': 'error',
-            'top3': [],
-            'all_cases': [],
-            'self_auction_count': 0,
-            'total_count': 0,
-            'error': str(e),
+            'top3': [], 'all_cases': [],
+            'self_auction_count': 0, 'total_count': 0,
+            'error': '搜索服务暂时不可用，请稍后重试',
         }
 
 
@@ -433,7 +427,7 @@ def search():
             'all_cases': [],
             'self_auction_count': 0,
             'total_count': 0,
-            'error': f'服务器异常: {str(e)}',
+            'error': '服务器内部错误，请联系管理员',
         }), 500
 
 
