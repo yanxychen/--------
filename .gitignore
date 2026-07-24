@@ -87,3 +87,6 @@ web-app/next-env.d.ts
 # TypeScript
 *.tsbuildinfo
 cloudflared.exe
+cloudflared.exe
+chrome_installer.exe
+*.exe

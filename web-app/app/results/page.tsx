@@ -70,13 +70,15 @@ export default function ResultsPage() {
         if (!searchResult?.allCases) return;
         setIsExporting(true);
         try {
-            const response = await fetch('/api/export', {
+            const backendUrl = (window as any).__APP_CONFIG?.backendUrl || '';
+            const exportUrl = backendUrl 
+                ? backendUrl.replace('/api/search', '/api/export')
+                : '/api/export';
+
+            const response = await fetch(exportUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    cases: searchResult.allCases,
-                    filename: '抵押物估值案例',
-                }),
+                body: JSON.stringify({ cases: searchResult.allCases }),
             });
 
             if (response.ok) {
@@ -91,11 +93,12 @@ export default function ResultsPage() {
                 document.body.removeChild(a);
                 window.URL.revokeObjectURL(url);
             } else {
-                alert('导出失败');
+                const err = await response.json().catch(() => ({}));
+                alert(err.message || '导出失败');
             }
         } catch (error) {
             console.error('导出失败:', error);
-            alert('导出失败');
+            alert('导出失败，请稍后重试');
         } finally {
             setIsExporting(false);
         }
@@ -108,9 +111,9 @@ export default function ResultsPage() {
                     <div className="w-16 h-16 border-4 border-primary-200 border-t-primary-600 rounded-full animate-spin mx-auto mb-4"></div>
                     <p className="text-gray-700 text-lg font-medium mb-2">正在搜索案例，请稍候...</p>
                     <p className="text-gray-500 text-sm">
-                        正在从淘宝司法拍卖获取最新数据，包括建筑面积、起拍时间、距离等详细信息。
+                        正在搜索淘宝司法拍卖和京东拍卖平台，请稍候...
                         <br />
-                        根据网络情况，大约需要 3-8 分钟。
+                        根据网络情况，大约需要 15-30 秒。
                     </p>
                     <div className="mt-6 bg-gray-100 rounded-full h-2 overflow-hidden">
                         <div className="bg-primary-600 h-full animate-pulse" style={{ width: '60%' }}></div>
