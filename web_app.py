@@ -316,16 +316,22 @@ def run_search(address, property_type, area=None):
         # Step 2: 为淘宝结果抓取详情 (最多10个，并行)
         taobao_items = [i for i in unique_raw if i.get('platform') == 'taobao']
         fetch_limit = min(10, len(taobao_items))
-
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = []
-            for i in range(fetch_limit):
-                futures.append(executor.submit(fetch_detail_for_item, searcher, taobao_items[i], 'taobao'))
-            for future in as_completed(futures, timeout=60):
-                try:
-                    future.result()
-                except Exception as e:
-                    print(f"详情线程异常: {e}")
+        if fetch_limit > 0:
+            try:
+                from asset_search_api import UnifiedAuctionSearcher
+                detail_searcher = UnifiedAuctionSearcher()
+                with ThreadPoolExecutor(max_workers=3) as executor:
+                    futures = []
+                    for i in range(fetch_limit):
+                        futures.append(executor.submit(fetch_detail_for_item, detail_searcher, taobao_items[i], 'taobao'))
+                    for future in as_completed(futures, timeout=60):
+                        try:
+                            future.result()
+                        except Exception as e:
+                            print(f"详情线程异常: {e}")
+                detail_searcher.cleanup()
+            except Exception as e:
+                print(f"详情抓取失败: {e}")
 
         # Step 3: 映射为 V1 格式
         v1_cases = []
