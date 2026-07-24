@@ -245,26 +245,26 @@ def run_search(address, property_type, area=None):
     {status, top3, all_cases, self_auction_count, total_count}
     """
     try:
-        from asset_search_api import UnifiedAuctionSearcher
-
-        # 资产类型映射 (前端用英文，后端用中文)
-        type_map = {
-            'residential': '住宅',
-            'commercial': '商业',
-            'other': '特殊',
-        }
-        asset_type_cn = type_map.get(property_type, property_type)
-        if asset_type_cn not in ['住宅', '商业', '工业', '特殊']:
-            asset_type_cn = '商业'
-
-        searcher = UnifiedAuctionSearcher()
+        all_raw = []
         
+        # 优先使用 Playwright 浏览器搜索
         try:
-            # Step 1: 搜索
-            all_raw = searcher.search_all(address, platforms=['jd', 'taobao'])
+            from playwright_searcher import PlaywrightAuctionSearcher
+            pw = PlaywrightAuctionSearcher()
+            all_raw = pw.search_all(address, platforms=['taobao', 'jd'])
+            pw.stop()
         except Exception as e:
-            print(f"搜索阶段异常: {e}")
-            all_raw = []
+            print(f"Playwright 搜索失败: {e}")
+        
+        # Playwright 没结果时，回退到API搜索
+        if not all_raw:
+            try:
+                from asset_search_api import UnifiedAuctionSearcher
+                searcher = UnifiedAuctionSearcher()
+                all_raw = searcher.search_all(address, platforms=['jd', 'taobao'])
+                searcher.cleanup()
+            except Exception as e:
+                print(f"API 搜索回退也失败: {e}")
         
         # 去重
         unique_raw = []
