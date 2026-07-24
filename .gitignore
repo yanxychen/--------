@@ -86,3 +86,4 @@ web-app/next-env.d.ts
 
 # TypeScript
 *.tsbuildinfo
+cloudflared.exe
