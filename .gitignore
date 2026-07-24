@@ -90,3 +90,4 @@ cloudflared.exe
 cloudflared.exe
 chrome_installer.exe
 *.exe
+.env.production
