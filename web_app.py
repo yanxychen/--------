@@ -522,78 +522,52 @@ def _estimate_distance(collateral: str, case_addr: str) -> float:
 
 
 def _filter_by_distance_time(items: list, address: str, property_type: str = '商业') -> list:
-    """
-    按距离+时间过滤案例，逐步放宽
-    
-    距离档位（住宅/商业）：
-      档位1: ≤1km  档位2: ≤3km  档位3: ≤5km
-    距离档位（工业/土地）：
-      档位1: ≤3km  档位2: ≤5km  档位3: ≤10km
-    
-    时间档位（全部）：
-      档位1: ≤1年  档位2: ≤2年
-    """
-    import re
-    from datetime import datetime, timedelta
-    
-    now = datetime.now()
-    
-    # 根据物业类型选择距离档位
-    is_industrial = property_type in ('工业', '土地', 'other')
-    dist_tiers = [1.0, 3.0, 5.0] if not is_industrial else [3.0, 5.0, 10.0]
-    time_tiers = [365, 730]  # 1年, 2年
-    
-    # 为每个item估算距离和解析时间
-    scored = []
-    for item in items:
-        title = item.get('title', '') or item.get('参照物位置', '') or ''
-        case_addr = item.get('address', '') or ''
-        # 从title中提取位置信息
-        dist = _estimate_distance(address, case_addr or title)
+    """按距离+时间过滤案例，逐步放宽（异常安全）"""
+    try:
+        import re
+        from datetime import datetime
         
-        # 解析起拍时间
-        start_date_str = item.get('start_date', '') or ''
-        days_old = 9999
-        if start_date_str:
-            try:
-                dt = datetime.strptime(start_date_str[:10], '%Y-%m-%d')
-                days_old = (now - dt).days
-            except:
-                pass
+        now = datetime.now()
+        is_industrial = property_type in ('工业', '土地', 'other')
+        dist_tiers = [1.0, 3.0, 5.0] if not is_industrial else [3.0, 5.0, 10.0]
+        time_tiers = [365, 730]
         
-        scored.append({
-            'item': item,
-            'distance_km': dist,
-            'days_old': days_old,
-        })
-    
-    # 逐步放宽：先距离，再时间
-    selected_items = []
-    seen_links = set()
-    
-    for dist_tier in dist_tiers:
-        for time_tier in time_tiers:
-            selected_items = []
-            seen_links = set()
-            for s in scored:
-                item = s['item']
-                link = item.get('link', '')
-                if link in seen_links:
-                    continue
-                dist_ok = s['distance_km'] <= 0 or s['distance_km'] <= dist_tier
-                time_ok = s['days_old'] <= time_tier
-                if dist_ok and time_ok:
-                    seen_links.add(link)
-                    # 标记距离用于展示
-                    item['distance_km'] = s['distance_km']
-                    selected_items.append(item)
+        scored = []
+        for item in items:
+            title = str(item.get('title', '') or item.get('参照物位置', '') or '')
+            case_addr = str(item.get('address', '') or '')
+            dist = _estimate_distance(address, case_addr or title)
             
-            if len(selected_items) >= 3:
-                print(f"[过滤] 距离≤{dist_tier}km + 时间≤{time_tier}天 → {len(selected_items)}条")
-                return selected_items
-    
-    print(f"[过滤] 放宽至最大范围 → {len(selected_items)}条")
-    return selected_items if selected_items else items
+            start_date_str = str(item.get('start_date', '') or '')
+            days_old = 9999
+            if len(start_date_str) >= 10:
+                try:
+                    dt = datetime.strptime(start_date_str[:10], '%Y-%m-%d')
+                    days_old = (now - dt).days
+                except: pass
+            
+            scored.append({'item': item, 'distance_km': dist, 'days_old': days_old})
+        
+        for dist_tier in dist_tiers:
+            for time_tier in time_tiers:
+                result = []
+                seen = set()
+                for s in scored:
+                    item = s['item']
+                    link = str(item.get('link', ''))
+                    if link in seen: continue
+                    # -1表示未知距离，允许通过
+                    dist_ok = s['distance_km'] <= 0 or s['distance_km'] <= dist_tier
+                    if dist_ok and s['days_old'] <= time_tier:
+                        seen.add(link)
+                        item['distance_km'] = s['distance_km']
+                        result.append(item)
+                if len(result) >= 3:
+                    return result
+        return result if result else items
+    except Exception as e:
+        print(f"[过滤异常] {e}")
+        return items
 
 
 def _dedup_items(items: list) -> list:
