@@ -441,12 +441,16 @@ def _expand_keywords_b(address: str) -> list:
 
 
 def _search_with_keywords(keywords: list) -> list:
-    """用关键词列表搜索拍卖案例，去重合并"""
+    """用关键词列表搜索拍卖案例，去重合并（限时30秒）"""
     from asset_search_api import UnifiedAuctionSearcher
+    import time
     searcher = UnifiedAuctionSearcher()
     all_raw = []
     seen_links = set()
+    deadline = time.time() + 28  # 28秒强制停止
     for kw in keywords:
+        if time.time() > deadline:
+            break
         try:
             items = searcher.search_all(kw, platforms=['jd', 'taobao'])
             for item in items:
@@ -459,7 +463,7 @@ def _search_with_keywords(keywords: list) -> list:
         except Exception as e:
             print(f"关键词 '{kw}' 搜索失败: {e}")
     searcher.cleanup()
-    return all_raw
+    return all_raw[:40]  # 最多返回40条
 
 
 def _search_items(address: str) -> list:
@@ -558,35 +562,38 @@ def _estimate_distance(collateral: str, case_addr: str, col_coords_cache=None) -
     
     # 文本估算（快速，不需要网络）
     def extract_areas(addr):
-        # 城市：匹配"XX市"或"XX州"，如果没有"市"则尝试取前两个字+市
         city = re.search(r'([\u4e00-\u9fff]+?[市州])', addr)
         if not city:
-            # 尝试匹配知名城市简称（如"佛山"→"佛山市"）
-            known_cities = ['北京', '上海', '广州', '深圳', '杭州', '佛山', '东莞',
-                           '成都', '武汉', '南京', '苏州', '天津', '重庆', '宁波',
-                           '长沙', '西安', '合肥', '郑州', '青岛', '厦门', '福州',
-                           '昆明', '大连', '无锡', '珠海', '中山', '惠州', '佛山',
-                           '沈阳', '济南', '南宁', '贵阳', '海口', '三亚', '拉萨']
-            for c in known_cities:
+            known = ['北京','上海','广州','深圳','杭州','佛山','东莞','成都','武汉','南京',
+                     '苏州','天津','重庆','宁波','长沙','西安','合肥','郑州','青岛','厦门',
+                     '福州','昆明','大连','无锡','珠海','中山','惠州','沈阳','济南','南宁',
+                     '贵阳','海口','三亚','拉萨']
+            for c in known:
                 if c in addr:
                     city = c + '市'
                     break
             if not city: city = ''
         else:
             city = city.group(1)
-        # 取地址中最右边的区县名
-        district_match = re.findall(r'([\u4e00-\u9fff]{2}[区县])', addr)
-        district = district_match[-1] if district_match else ''
-        street = re.search(r'([\u4e00-\u9fff]+?[街道镇乡])', addr)
+        dm = re.findall(r'([\u4e00-\u9fff]{2}[区县])', addr)
+        district = dm[-1] if dm else ''
+        town = re.search(r'([\u4e00-\u9fff]{2,3}(?:镇|乡))', addr)
+        street = re.search(r'([\u4e00-\u9fff]+?[街道])', addr)
         road = re.search(r'([\u4e00-\u9fff]+?(?:路|街|大道|公路))', addr)
         return {'city': city, 'district': district,
-                'street': street.group(1) if street else '', 'road': road.group(1) if road else ''}
-    
+                'town': town.group(1) if town else '',
+                'street': street.group(1) if street else '',
+                'road': road.group(1) if road else ''}
     col = extract_areas(collateral)
     case = extract_areas(case_addr)
+    if col['town'] and col['town'] == case['town']: return 3.0
     if col['street'] and col['street'] == case['street']: return 1.0
     if col['road'] and col['road'] == case['road']: return 3.0
-    if col['district'] and col['district'] == case['district']: return 5.0
+    if col['district'] and col['district'] == case['district']: 
+        # 同区不同镇 → 15km（南海区很大，大沥到千灯湖可能30km）
+        if col['town'] and case['town'] and col['town'] != case['town']:
+            return 15.0
+        return 5.0
     if col['city'] and col['city'] == case['city']: return 10.0
     if col['city'] and case['city']: return 50.0
     return -1
