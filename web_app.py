@@ -136,13 +136,38 @@ def map_raw_to_v1(raw_item, platform, index):
     # 参照物位置：用标题或地址
     ref_location = title if title else address
 
-    # 备注
+    # 备注 - 遵循V1标准格式
     remark_parts = []
+    
+    # 拍卖轮次（一拍/二拍/变卖）
+    stage = raw_item.get('current_stage', '') or raw_item.get('stage', '') or '一拍'
+    
+    # 日期格式：YYYY年MM月DD日
+    start_date = raw_item.get('start_date', '') or ''
+    date_str = ''
+    if start_date and len(start_date) >= 10:
+        try:
+            dt = datetime.strptime(start_date[:10].replace('T', ' '), '%Y-%m-%d')
+            date_str = f"{dt.year}年{dt.month:02d}月{dt.day:02d}日"
+        except:
+            date_str = start_date[:10]
+    
+    # 状态
+    status = raw_item.get('status', '') or raw_item.get('statusDesc', '') or ''
+    
+    # 组装备注：一拍：YYYY年MM月DD日，起拍价：X,XXX,XXX元，状态：XXX
     if start_price_val > 0:
-        remark_parts.append(f"起拍价：{start_price_val:,.0f}元")
-    if price_val > 0 and price_val != start_price_val:
-        remark_parts.append(f"当前价：{price_val:,.0f}元")
-    remark = '；'.join(remark_parts) if remark_parts else ''
+        stage_part = f"{stage}：" if stage else ""
+        date_part = f"{date_str}，" if date_str else ""
+        status_part = f"，状态：{status}" if status else ""
+        remark = f"{stage_part}{date_part}起拍价：{start_price_val:,.0f}元{status_part}"
+    else:
+        remark = ''
+    
+    # 追加距离信息
+    distance_km = raw_item.get('distance_km', 0)
+    if distance_km and distance_km > 0:
+        remark += f"\n距离抵押物约{distance_km:.1f}公里"
 
     # 拍卖轮次
     auction_records = []
@@ -242,20 +267,14 @@ def map_raw_to_v1(raw_item, platform, index):
                 'status': detail.get('status', '未知'),
             }]
             v1_case['auction_records'] = v1_case['auctionRecords']
-        # 备注
-        remark_d = []
-        if detail.get('current_stage'):
-            remark_d.append(f"{detail['current_stage']}")
-        if detail.get('start_price', 0) > 0:
-            remark_d.append(f"起拍价：{detail['start_price']:,.0f}元")
+        # 备注（用上面已格式化的remark，除非详情有评估价/成交价补充）
+        detail_remark_extras = []
         if detail.get('consult_price', 0) > 0:
-            remark_d.append(f"评估价：{detail['consult_price']:,.0f}元")
+            detail_remark_extras.append(f"评估价：{detail['consult_price']:,.0f}元")
         if detail.get('deal_price', 0) > 0 and detail.get('status') == '已成交':
-            remark_d.append(f"成交价：{detail['deal_price']:,.0f}元")
-        if detail.get('status'):
-            remark_d.append(f"状态：{detail['status']}")
-        if remark_d:
-            v1_case['备注'] = '；'.join(remark_d)
+            detail_remark_extras.append(f"成交价：{detail['deal_price']:,.0f}元")
+        if detail_remark_extras:
+            v1_case['备注'] = remark + '；' + '；'.join(detail_remark_extras)
             v1_case['remark'] = v1_case['备注']
 
     return v1_case
@@ -269,13 +288,21 @@ def fetch_detail_for_item(item, platform):
             detail = get_taobao_detail_mtop(item['item_id'])
             if detail.get('success'):
                 item['detail'] = detail
-                # 回填价格字段
+                # 回填所有字段
                 if detail.get('start_price', 0) > 0:
                     item['start_price'] = str(detail['start_price'])
                 if detail.get('consult_price', 0) > 0:
                     item['consult_price'] = str(detail['consult_price'])
                 if detail.get('deal_price', 0) > 0:
                     item['deal_price'] = str(detail['deal_price'])
+                if detail.get('start_date'):
+                    item['start_date'] = detail['start_date']
+                if detail.get('current_stage'):
+                    item['current_stage'] = detail['current_stage']
+                if detail.get('status'):
+                    item['status'] = detail['status']
+                if detail.get('address'):
+                    item['address'] = detail['address']
             else:
                 item['detail'] = {'success': False, 'error': detail.get('error', '')}
         except Exception as e:
