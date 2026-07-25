@@ -503,48 +503,69 @@ def ab_test():
     })
 
 
-def _estimate_distance(collateral: str, case_addr: str) -> float:
-    """根据地址文本估算距离（公里），无高德API时的近似方案"""
+def _estimate_distance(collateral: str, case_addr: str, col_coords_cache=None) -> float:
+    """估算距离（公里）：优先高德驾车距离，备胎文本估算"""
     if not case_addr or not collateral:
-        return -1  # 未知
+        return -1
+    import re, json, urllib.request, urllib.parse
     
-    # 提取行政区划层级
-    import re
+    amap_key = os.environ.get('AMAP_API_KEY', 'd7d06a2c20dacd8c861173b82cf70d71')
+    
+    def get_coords(addr: str) -> tuple:
+        """通过高德inputtips获取坐标"""
+        try:
+            import re as _re
+            city_hint = ''
+            c = _re.search(r'(.+?[市州])', addr)
+            if c: city_hint = c.group(1)
+            url = f"https://restapi.amap.com/v3/assistant/inputtips?key={amap_key}&keywords={urllib.parse.quote(addr[:40])}"
+            if city_hint:
+                url += f"&city={urllib.parse.quote(city_hint)}"
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            resp = json.loads(urllib.request.urlopen(req, timeout=3).read())
+            if resp.get('tips'):
+                loc = resp['tips'][0].get('location', '')
+                if loc and ',' in loc:
+                    parts = loc.split(',')
+                    return (float(parts[0]), float(parts[1]))
+        except: pass
+        return None
+    
+    # 缓存抵押物坐标（只需查一次）
+    if col_coords_cache is not None:
+        col_coords = col_coords_cache
+    else:
+        col_coords = get_coords(collateral)
+    
+    case_coords = get_coords(case_addr)
+    if col_coords and case_coords:
+        try:
+            url = f"https://restapi.amap.com/v3/direction/driving?key={amap_key}&origin={col_coords[0]},{col_coords[1]}&destination={case_coords[0]},{case_coords[1]}"
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            data = json.loads(urllib.request.urlopen(req, timeout=5).read())
+            if data.get('route') and data['route'].get('paths'):
+                dist_m = float(data['route']['paths'][0].get('distance', 0))
+                if dist_m > 0:
+                    return round(dist_m / 1000, 1)
+        except: pass
+    
+    # 备胎：文本估算
     def extract_areas(addr):
-        # 从右往左找最细粒度的行政区划
         city = re.search(r'([\u4e00-\u9fff]+?[市州])', addr)
-        # 区/县/市 → 匹配"XX区"、"XX县"、"XX市"但排除"XX市XX区"中的市
         district_match = re.findall(r'([\u4e00-\u9fff]{2,3}[区县])', addr)
         district = district_match[-1] if district_match else ''
         street = re.search(r'([\u4e00-\u9fff]+?[街道镇乡])', addr)
         road = re.search(r'([\u4e00-\u9fff]+?(?:路|街|大道))', addr)
-        return {
-            'city': city.group(1) if city else '',
-            'district': district,
-            'street': street.group(1) if street else '',
-            'road': road.group(1) if road else '',
-        }
+        return {'city': city.group(1) if city else '', 'district': district,
+                'street': street.group(1) if street else '', 'road': road.group(1) if road else ''}
     
-    col_areas = extract_areas(collateral)
-    case_areas = extract_areas(case_addr)
-    
-    # 同一街道/路段 → ≤1km
-    if col_areas['street'] and col_areas['street'] == case_areas['street']:
-        return 1.0
-    if col_areas['road'] and col_areas['road'] == case_areas['road']:
-        return 1.0
-    
-    # 同一行政区 → ≤5km
-    if col_areas['district'] and col_areas['district'] == case_areas['district']:
-        return 3.0
-    # district匹配部分（如"禅城区" vs "南海区"——同城不同区）
-    if col_areas['city'] and col_areas['city'] == case_areas['city']:
-        return 10.0
-    
-    # 同省不同市 → 50km+
-    if col_areas['city'] and case_areas['city']:
-        return 50.0
-    
+    col = extract_areas(collateral)
+    case = extract_areas(case_addr)
+    if col['street'] and col['street'] == case['street']: return 1.0
+    if col['road'] and col['road'] == case['road']: return 1.0
+    if col['district'] and col['district'] == case['district']: return 3.0
+    if col['city'] and col['city'] == case['city']: return 10.0
+    if col['city'] and case['city']: return 50.0
     return -1
 
 
@@ -559,11 +580,28 @@ def _filter_by_distance_time(items: list, address: str, property_type: str = '�
         dist_tiers = [1.0, 3.0, 5.0] if not is_industrial else [3.0, 5.0, 10.0]
         time_tiers = [365, 730]
         
+        # 缓存抵押物坐标（只查一次高德）
+        col_coords = None
+        try:
+            import re as _re, json, urllib.request, urllib.parse
+            amap_key = os.environ.get('AMAP_API_KEY', 'd7d06a2c20dacd8c861173b82cf70d71')
+            url = f"https://restapi.amap.com/v3/assistant/inputtips?key={amap_key}&keywords={urllib.parse.quote(address[:40])}"
+            ch = _re.search(r'(.+?[市州])', address)
+            if ch: url += f"&city={urllib.parse.quote(ch.group(1))}"
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            resp = json.loads(urllib.request.urlopen(req, timeout=5).read())
+            if resp.get('tips'):
+                loc = resp['tips'][0].get('location', '')
+                if loc and ',' in loc:
+                    parts = loc.split(',')
+                    col_coords = (float(parts[0]), float(parts[1]))
+        except: pass
+        
         scored = []
         for item in items:
             title = str(item.get('title', '') or item.get('参照物位置', '') or '')
             case_addr = str(item.get('address', '') or '')
-            dist = _estimate_distance(address, case_addr or title)
+            dist = _estimate_distance(address, case_addr or title, col_coords)
             
             start_date_str = str(item.get('start_date', '') or '')
             days_old = 9999
