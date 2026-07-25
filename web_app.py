@@ -476,6 +476,126 @@ def ab_test():
     })
 
 
+def _estimate_distance(collateral: str, case_addr: str) -> float:
+    """根据地址文本估算距离（公里），无高德API时的近似方案"""
+    if not case_addr or not collateral:
+        return -1  # 未知
+    
+    # 提取行政区划层级
+    import re
+    def extract_areas(addr):
+        # 从右往左找最细粒度的行政区划
+        city = re.search(r'([\u4e00-\u9fff]+?[市州])', addr)
+        # 区/县/市 → 匹配"XX区"、"XX县"、"XX市"但排除"XX市XX区"中的市
+        district_match = re.findall(r'([\u4e00-\u9fff]{2,3}[区县])', addr)
+        district = district_match[-1] if district_match else ''
+        street = re.search(r'([\u4e00-\u9fff]+?[街道镇乡])', addr)
+        road = re.search(r'([\u4e00-\u9fff]+?(?:路|街|大道))', addr)
+        return {
+            'city': city.group(1) if city else '',
+            'district': district,
+            'street': street.group(1) if street else '',
+            'road': road.group(1) if road else '',
+        }
+    
+    col_areas = extract_areas(collateral)
+    case_areas = extract_areas(case_addr)
+    
+    # 同一街道/路段 → ≤1km
+    if col_areas['street'] and col_areas['street'] == case_areas['street']:
+        return 1.0
+    if col_areas['road'] and col_areas['road'] == case_areas['road']:
+        return 1.0
+    
+    # 同一行政区 → ≤5km
+    if col_areas['district'] and col_areas['district'] == case_areas['district']:
+        return 3.0
+    # district匹配部分（如"禅城区" vs "南海区"——同城不同区）
+    if col_areas['city'] and col_areas['city'] == case_areas['city']:
+        return 10.0
+    
+    # 同省不同市 → 50km+
+    if col_areas['city'] and case_areas['city']:
+        return 50.0
+    
+    return -1
+
+
+def _filter_by_distance_time(items: list, address: str, property_type: str = '商业') -> list:
+    """
+    按距离+时间过滤案例，逐步放宽
+    
+    距离档位（住宅/商业）：
+      档位1: ≤1km  档位2: ≤3km  档位3: ≤5km
+    距离档位（工业/土地）：
+      档位1: ≤3km  档位2: ≤5km  档位3: ≤10km
+    
+    时间档位（全部）：
+      档位1: ≤1年  档位2: ≤2年
+    """
+    import re
+    from datetime import datetime, timedelta
+    
+    now = datetime.now()
+    
+    # 根据物业类型选择距离档位
+    is_industrial = property_type in ('工业', '土地', 'other')
+    dist_tiers = [1.0, 3.0, 5.0] if not is_industrial else [3.0, 5.0, 10.0]
+    time_tiers = [365, 730]  # 1年, 2年
+    
+    # 为每个item估算距离和解析时间
+    scored = []
+    for item in items:
+        title = item.get('title', '') or item.get('参照物位置', '') or ''
+        case_addr = item.get('address', '') or ''
+        # 从title中提取位置信息
+        dist = _estimate_distance(address, case_addr or title)
+        
+        # 解析起拍时间
+        start_date_str = item.get('start_date', '') or ''
+        days_old = 9999
+        if start_date_str:
+            try:
+                dt = datetime.strptime(start_date_str[:10], '%Y-%m-%d')
+                days_old = (now - dt).days
+            except:
+                pass
+        
+        scored.append({
+            'item': item,
+            'distance_km': dist,
+            'days_old': days_old,
+        })
+    
+    # 逐步放宽：先距离，再时间
+    selected_items = []
+    seen_links = set()
+    
+    for dist_tier in dist_tiers:
+        for time_tier in time_tiers:
+            selected_items = []
+            seen_links = set()
+            for s in scored:
+                item = s['item']
+                link = item.get('link', '')
+                if link in seen_links:
+                    continue
+                dist_ok = s['distance_km'] <= 0 or s['distance_km'] <= dist_tier
+                time_ok = s['days_old'] <= time_tier
+                if dist_ok and time_ok:
+                    seen_links.add(link)
+                    # 标记距离用于展示
+                    item['distance_km'] = s['distance_km']
+                    selected_items.append(item)
+            
+            if len(selected_items) >= 3:
+                print(f"[过滤] 距离≤{dist_tier}km + 时间≤{time_tier}天 → {len(selected_items)}条")
+                return selected_items
+    
+    print(f"[过滤] 放宽至最大范围 → {len(selected_items)}条")
+    return selected_items if selected_items else items
+
+
 def _dedup_items(items: list) -> list:
     """按链接去重"""
     seen = set()
@@ -548,8 +668,15 @@ def run_search(address, property_type=None, area=None):
         all_raw = _search_items(address)
         unique_raw = _dedup_items(all_raw)
         filtered_raw = _filter_items(unique_raw)
-        _enrich_details(filtered_raw)
-        return _format_and_sort(filtered_raw, address)
+        
+        # 距离+时间过滤（物业类型映射）
+        pt = property_type or '商业'
+        type_map = {'residential': '住宅', 'commercial': '商业', '住宅': '住宅', '商业': '商业'}
+        mapped_type = type_map.get(pt, pt)
+        dist_filtered = _filter_by_distance_time(filtered_raw, address, mapped_type)
+        
+        _enrich_details(dist_filtered)
+        return _format_and_sort(dist_filtered, address)
     except Exception as e:
         print(f"搜索异常: {e}")
         import traceback
