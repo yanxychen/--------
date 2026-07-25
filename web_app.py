@@ -261,14 +261,24 @@ def map_raw_to_v1(raw_item, platform, index):
 
 
 def fetch_detail_for_item(item, platform):
-    """为单个搜索结果抓取详情页数据（仅淘宝支持）"""
+    """为单个搜索结果抓取详情页数据（淘宝用MTOP API，京东用已有数据）"""
     if platform == 'taobao' and item.get('item_id'):
         try:
-            from taobao_chrome_fetcher import get_taobao_detail_with_chrome
-            detail = get_taobao_detail_with_chrome(item['item_id'])
-            item['detail'] = detail
+            from taobao_mtop_api import get_taobao_detail_mtop
+            detail = get_taobao_detail_mtop(item['item_id'])
+            if detail.get('success'):
+                item['detail'] = detail
+                # 回填价格字段
+                if detail.get('start_price', 0) > 0:
+                    item['start_price'] = str(detail['start_price'])
+                if detail.get('consult_price', 0) > 0:
+                    item['consult_price'] = str(detail['consult_price'])
+                if detail.get('deal_price', 0) > 0:
+                    item['deal_price'] = str(detail['deal_price'])
+            else:
+                item['detail'] = {'success': False, 'error': detail.get('error', '')}
         except Exception as e:
-            print(f"Chrome详情抓取失败 {item.get('item_id')}: {e}")
+            print(f"MTOP详情抓取失败 {item.get('item_id')}: {e}")
             item['detail'] = {'success': False, 'error': str(e)}
     return item
 
