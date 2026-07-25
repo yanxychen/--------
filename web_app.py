@@ -221,8 +221,6 @@ def map_raw_to_v1(raw_item, platform, index):
 
         # 元信息
         'platform': platform,
-        'score': 50,  # 默认评分
-        'distance_km': None,
         'is_self_auction': False,
         'price_anomaly': None,
     }
