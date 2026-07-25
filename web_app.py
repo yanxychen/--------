@@ -155,16 +155,33 @@ def map_raw_to_v1(raw_item, platform, index):
     # 状态
     status = raw_item.get('status', '') or raw_item.get('statusDesc', '') or ''
     
-    # 组装备注：一拍：YYYY年MM月DD日，起拍价：X,XXX,XXX元，状态：XXX
+    # 组装备注：V1标准格式
+    # 一拍：2026年07月24日，起拍价：5,000,000元，状态：即将开始
+    remark = ''
     if start_price_val > 0:
+        parts = []
+        # 轮次
         stage_part = f"{stage}：" if stage else ""
-        date_part = f"{date_str}，" if date_str else ""
-        status_part = f"，状态：{status}" if status else ""
-        remark = f"{stage_part}{date_part}起拍价：{start_price_val:,.0f}元{status_part}"
+        parts.append(stage_part)
+        # 日期
+        if date_str:
+            parts.append(f"{date_str}，")
+        # 起拍价
+        parts.append(f"起拍价：{start_price_val:,.0f}元")
+        # 成交价（如果有）
+        deal_price_raw = raw_item.get('deal_price', 0)
+        try: deal_val = float(str(deal_price_raw).replace(',', ''))
+        except: deal_val = 0.0
+        if deal_val > 0:
+            parts.append(f"，成交价：{deal_val:,.0f}元")
+        # 状态
+        if status:
+            parts.append(f"，状态：{status}")
+        remark = ''.join(parts)
     else:
         remark = ''
     
-    # 追加距离信息
+    # 追加距离信息（独立一行）
     distance_km = raw_item.get('distance_km', 0)
     if distance_km and distance_km > 0:
         remark += f"\n距离抵押物约{distance_km:.1f}公里"
@@ -266,15 +283,24 @@ def map_raw_to_v1(raw_item, platform, index):
                 'status': detail.get('status', '未知'),
             }]
             v1_case['auction_records'] = v1_case['auctionRecords']
-        # 备注（用上面已格式化的remark，除非详情有评估价/成交价补充）
+        # 备注（用上面已格式化的remark，补充评估价/成交价）
         detail_remark_extras = []
         if detail.get('consult_price', 0) > 0:
             detail_remark_extras.append(f"评估价：{detail['consult_price']:,.0f}元")
         if detail.get('deal_price', 0) > 0 and detail.get('status') == '已成交':
             detail_remark_extras.append(f"成交价：{detail['deal_price']:,.0f}元")
         if detail_remark_extras:
-            v1_case['备注'] = remark + '；' + '；'.join(detail_remark_extras)
-            v1_case['remark'] = v1_case['备注']
+            extras_str = '；'.join(detail_remark_extras)
+            # 在距离信息之前插入（如果存在距离）
+            dist_marker = '\n距离抵押物约'
+            if dist_marker in remark:
+                remark = remark.replace(dist_marker, f'；{extras_str}\n距离抵押物约')
+            else:
+                remark += f'；{extras_str}'
+        if detail.get('status') and detail.get('status') not in str(remark):
+            remark = remark.replace('\n', f'，状态：{detail["status"]}\n', 1) if '\n' in remark else remark + f'，状态：{detail["status"]}'
+        v1_case['备注'] = remark
+        v1_case['remark'] = remark
 
     return v1_case
 
