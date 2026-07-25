@@ -503,52 +503,34 @@ def ab_test():
 
 
 def _estimate_distance(collateral: str, case_addr: str, col_coords_cache=None) -> float:
-    """估算距离（公里）：优先高德驾车距离，备胎文本估算"""
+    """估算距离（公里）：有坐标用高德驾车距离，无坐标用文本估算"""
     if not case_addr or not collateral:
         return -1
     import re, json, urllib.request, urllib.parse
     
     amap_key = os.environ.get('AMAP_API_KEY', 'd7d06a2c20dacd8c861173b82cf70d71')
     
-    def get_coords(addr: str) -> tuple:
-        """通过高德inputtips获取坐标"""
+    # 如果有抵押物坐标，尝试高德驾车距离（仅对知名地标有效）
+    if col_coords_cache:
         try:
-            import re as _re
-            city_hint = ''
-            c = _re.search(r'(.+?[市州])', addr)
-            if c: city_hint = c.group(1)
-            url = f"https://restapi.amap.com/v3/assistant/inputtips?key={amap_key}&keywords={urllib.parse.quote(addr[:40])}"
-            if city_hint:
-                url += f"&city={urllib.parse.quote(city_hint)}"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            resp = json.loads(urllib.request.urlopen(req, timeout=3).read())
+            # 先查案例坐标
+            c_url = f"https://restapi.amap.com/v3/assistant/inputtips?key={amap_key}&keywords={urllib.parse.quote(case_addr[:40])}"
+            req = urllib.request.Request(c_url, headers={'User-Agent': 'Mozilla/5.0'})
+            resp = json.loads(urllib.request.urlopen(req, timeout=2).read())
             if resp.get('tips'):
                 loc = resp['tips'][0].get('location', '')
                 if loc and ',' in loc:
                     parts = loc.split(',')
-                    return (float(parts[0]), float(parts[1]))
-        except: pass
-        return None
-    
-    # 缓存抵押物坐标（只需查一次）
-    if col_coords_cache is not None:
-        col_coords = col_coords_cache
-    else:
-        col_coords = get_coords(collateral)
-    
-    case_coords = get_coords(case_addr)
-    if col_coords and case_coords:
-        try:
-            url = f"https://restapi.amap.com/v3/direction/driving?key={amap_key}&origin={col_coords[0]},{col_coords[1]}&destination={case_coords[0]},{case_coords[1]}"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            data = json.loads(urllib.request.urlopen(req, timeout=5).read())
-            if data.get('route') and data['route'].get('paths'):
-                dist_m = float(data['route']['paths'][0].get('distance', 0))
-                if dist_m > 0:
-                    return round(dist_m / 1000, 1)
+                    dst_url = f"https://restapi.amap.com/v3/direction/driving?key={amap_key}&origin={col_coords_cache[0]},{col_coords_cache[1]}&destination={float(parts[0])},{float(parts[1])}"
+                    req2 = urllib.request.Request(dst_url, headers={'User-Agent': 'Mozilla/5.0'})
+                    data = json.loads(urllib.request.urlopen(req2, timeout=3).read())
+                    if data.get('route') and data['route'].get('paths'):
+                        dist_m = float(data['route']['paths'][0].get('distance', 0))
+                        if dist_m > 0:
+                            return round(dist_m / 1000, 1)
         except: pass
     
-    # 备胎：文本估算
+    # 文本估算（快速，不需要网络）
     def extract_areas(addr):
         city = re.search(r'([\u4e00-\u9fff]+?[市州])', addr)
         district_match = re.findall(r'([\u4e00-\u9fff]{2,3}[区县])', addr)
@@ -561,8 +543,8 @@ def _estimate_distance(collateral: str, case_addr: str, col_coords_cache=None) -
     col = extract_areas(collateral)
     case = extract_areas(case_addr)
     if col['street'] and col['street'] == case['street']: return 1.0
-    if col['road'] and col['road'] == case['road']: return 1.0
-    if col['district'] and col['district'] == case['district']: return 3.0
+    if col['road'] and col['road'] == case['road']: return 3.0
+    if col['district'] and col['district'] == case['district']: return 5.0
     if col['city'] and col['city'] == case['city']: return 10.0
     if col['city'] and case['city']: return 50.0
     return -1
