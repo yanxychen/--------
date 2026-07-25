@@ -549,7 +549,7 @@ def _estimate_distance(collateral: str, case_addr: str, col_coords_cache=None) -
         else:
             city = city.group(1)
         # 取地址中最右边的区县名
-        district_match = re.findall(r'([\u4e00-\u9fff]{2,3}[区县])', addr)
+        district_match = re.findall(r'([\u4e00-\u9fff]{2}[区县])', addr)
         district = district_match[-1] if district_match else ''
         street = re.search(r'([\u4e00-\u9fff]+?[街道镇乡])', addr)
         road = re.search(r'([\u4e00-\u9fff]+?(?:路|街|大道|公路))', addr)
@@ -607,19 +607,30 @@ def _filter_by_distance_time(items: list, address: str, property_type: str = '�
                     dt = datetime.strptime(start_date_str[:10], '%Y-%m-%d')
                     days_old = (now - dt).days
                 except: pass
+            # 未知日期允许通过（设为0）
+            if days_old == 9999:
+                days_old = 0
             
             scored.append({'item': item, 'distance_km': dist, 'days_old': days_old})
         
         for dist_tier in dist_tiers:
             for time_tier in time_tiers:
+                # 按距离排序：有距离的优先（从近到远），未知距离的最后
+                sorted_scored = sorted(scored, key=lambda s: (
+                    0 if s['distance_km'] is not None and s['distance_km'] > 0 else 1 if s['distance_km'] == -1 else 2,
+                    s['distance_km'] if s['distance_km'] is not None and s['distance_km'] > 0 else 999,
+                ))
                 result = []
                 seen = set()
-                for s in scored:
+                for s in sorted_scored:
                     item = s['item']
                     link = str(item.get('link', ''))
                     if link in seen: continue
-                    # -1表示未知距离，允许通过
-                    dist_ok = s['distance_km'] <= 0 or s['distance_km'] <= dist_tier
+                    # -1表示未知距离，只在最后档位才允许通过
+                    if s['distance_km'] == -1:
+                        dist_ok = (dist_tier == dist_tiers[-1])
+                    else:
+                        dist_ok = s['distance_km'] <= 0 or s['distance_km'] <= dist_tier
                     if dist_ok and s['days_old'] <= time_tier:
                         seen.add(link)
                         item['distance_km'] = s['distance_km']
