@@ -120,11 +120,11 @@ def map_raw_to_v1(raw_item, platform, index):
             except:
                 pass
 
-    # 单价（如果有总价和面积，计算单价）
+    # 单价（元/㎡） - market_value已经是元，直接÷面积
     unit_price = 0.0
-    market_value = price_val if price_val > 0 else start_price_val  # 优先用当前价，再用起拍价
-    if market_value > 0 and building_area > 0:
-        unit_price = market_value * 10000 / building_area
+    market_value_for_price = price_val if price_val > 0 else start_price_val
+    if market_value_for_price > 0 and building_area > 0:
+        unit_price = market_value_for_price / building_area
 
     # 市场价值（万元） - 用起拍价或当前价估算
     market_value_wan = 0.0
