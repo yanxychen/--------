@@ -337,45 +337,54 @@ def fetch_detail_for_item(item, platform):
 
 
 def _expand_keywords(address: str) -> list:
-    """将抵押物地址拆分成由近到远的分层关键词（策略A）"""
+    """将抵押物地址拆分成由近到远的分层关键词
+    第1层: 完整地址（最精确）
+    第2层: 小区/楼盘名（去掉门牌号/栋号）
+    第3层: 路段（XX路/XX街/XX大道）
+    第4层: 行政区（XX区/XX县）
+    第5层: 城市（XX市）——兜底
+    """
     addr = address.strip()
-    districts = ['区', '市', '县', '镇', '街道', '乡']
-    keywords = [addr]
     import re
+    result = [addr]  # 第1层：完整地址
+
+    # 第2层：小区/楼盘名（去掉门牌号）
+    # 尝试按分隔符截取前段
     for sep in [' ', '，', ',', '、']:
         parts = addr.split(sep)
         if len(parts) > 1:
             main_part = parts[0].strip()
-            if len(main_part) >= 2:
-                keywords.append(main_part)
-                break
-    area_match = re.match(r'([\u4e00-\u9fff]{2,4}(?:市|区|县|州))', addr)
-    if area_match:
-        area = area_match.group(1)
-        if area not in keywords:
-            keywords.append(area)
-    road_match = re.search(r'[^\d]+路', addr)
+            if len(main_part) >= 2 and main_part not in result:
+                result.append(main_part)
+            break
+
+    # 第3层：路段（XX路/XX街/XX大道）
+    road_match = re.search(r'([\u4e00-\u9fff]+?(?:路|街|大道))', addr)
     if road_match:
-        road = road_match.group()
-        if road not in keywords:
-            keywords.append(road)
-    for d in districts:
-        idx = addr.find(d)
-        if idx > 0 and idx < len(addr) - 1:
-            district = addr[:idx+len(d)]
-            if district not in keywords:
-                keywords.append(district)
+        road = road_match.group(1)
+        if road not in result:
+            result.append(road)
+
+    # 第4层：行政区——从右往左找区/县名
+    # 先按市/州拆分，在最后一个分段里找区/县
+    segments = re.split(r'[市州]', addr)
+    area = ''
+    for seg in reversed(segments):
+        if not seg: continue
+        m = re.search(r'([\u4e00-\u9fff]{2,3}(?:区|县))', seg)
+        if m:
+            area = m.group(1)
+            break
+    if area and area not in result:
+        result.append(area)
+
+    # 第5层：城市（XX市/XX州）——兜底
     city_match = re.search(r'(.+?[市州])', addr)
     if city_match:
         city = city_match.group(1)
-        if city not in keywords:
-            keywords.append(city)
-    seen = set()
-    result = []
-    for kw in keywords:
-        if kw not in seen:
-            seen.add(kw)
-            result.append(kw)
+        if city not in result:
+            result.append(city)
+
     return result
 
 
