@@ -389,64 +389,54 @@ def _expand_keywords(address: str) -> list:
 
 
 def _expand_keywords_b(address: str) -> list:
-    """使用高德API定位抵押物周边POI提取关键词（策略B）"""
-    import re, json, urllib.request, urllib.parse
+    """使用高德API定位抵押物周边POI提取关键词（策略B）
+    1. 地理编码 → 获取抵押物经纬度
+    2. 周边搜索 → 找附近住宅小区/商业楼宇
+    3. 提取POI名称作关键词
+    """
+    import urllib.request, urllib.parse, json, re
     amap_key = os.environ.get('AMAP_API_KEY', 'd7d06a2c20dacd8c861173b82cf70d71')
     keywords = [address]
-
-    # 提取城市名用于POI搜索
-    city = address
-    city_match = re.search(r'(.+?[市州])', address)
-    if city_match:
-        city = city_match.group(1)
-
-    # 提取地址中的核心关键词用于POI搜索
-    poi_hints = []
-    # 小区/楼盘名
-    for sep in [' ', '，', ',', '、']:
-        parts = address.split(sep)
-        if len(parts) > 1:
-            poi_hints.append(parts[0].strip())
-    # 路段
-    road_match = re.search(r'([\u4e00-\u9fff]+(?:路|街|大道))', address)
-    if road_match:
-        poi_hints.append(road_match.group(1))
-
-    # 用POI文本搜索获取附近地标
+    
+    # 1. 地理编码
     try:
-        for hint in poi_hints[:2]:  # 最多2个POI关键词
-            url = f"https://restapi.amap.com/v3/place/text?key={amap_key}&keywords={urllib.parse.quote(hint)}&city={urllib.parse.quote(city)}&offset=3"
-            req = urllib.request.Request(url)
-            resp = urllib.request.urlopen(req, timeout=5)
-            data = json.loads(resp.read().decode())
-            if data.get('status') == '1' and data.get('pois'):
-                for poi in data['pois']:
-                    name = poi.get('name', '')
-                    location = poi.get('location', '')
-                    if name and location:
-                        # 用这个POI坐标做周边搜索，找到更多POI
-                        around_url = f"https://restapi.amap.com/v3/place/around?key={amap_key}&location={location}&radius=500&offset=10"
-                        req2 = urllib.request.Request(around_url)
-                        resp2 = urllib.request.urlopen(req2, timeout=5)
-                        around_data = json.loads(resp2.read().decode())
-                        if around_data.get('status') == '1' and around_data.get('pois'):
-                            for poi2 in around_data['pois']:
-                                pname = poi2.get('name', '').strip()
-                                if pname and len(pname) >= 2 and ' ' not in pname:
-                                    # 提取有意义的POI名称作为关键词（排除品牌连锁店名）
-                                    if not any(skip in pname for skip in ['星巴克', '麦当劳', '肯德基', '7-11']):
-                                        keywords.append(pname)
+        geo_url = f"https://restapi.amap.com/v3/geocode/geo?key={amap_key}&address={urllib.parse.quote(address[:50])}"
+        data = json.loads(urllib.request.urlopen(geo_url, timeout=5).read())
+        if data.get('status') == '1' and data.get('geocodes'):
+            loc = data['geocodes'][0].get('location', '')
+            print(f"[高德] 定位: {address} → {loc}")
+            
+            if loc and ',' in loc:
+                # 2. 周边搜索住宅小区、商业写字楼（分开查）
+                for poi_type in ['120300', '120200']:
+                    around_url = f"https://restapi.amap.com/v3/place/around?key={amap_key}&location={loc}&types={poi_type}&radius=800&offset=10"
+                    poi_data = json.loads(urllib.request.urlopen(around_url, timeout=5).read())
+                    if poi_data.get('status') == '1':
+                        for p in poi_data.get('pois', []):
+                            name = p.get('name', '').strip()
+                            if name and len(name) >= 2:
+                                keywords.append(name)
+        else:
+            # 3. geocode失败，用inputtips兜底
+            tip_url = f"https://restapi.amap.com/v3/assistant/inputtips?key={amap_key}&keywords={urllib.parse.quote(address[:30])}"
+            tip_data = json.loads(urllib.request.urlopen(tip_url, timeout=5).read())
+            if tip_data.get('tips'):
+                tip = tip_data['tips'][0]
+                loc = tip.get('location', '')
+                if loc and ',' in loc:
+                    around_url = f"https://restapi.amap.com/v3/place/around?key={amap_key}&location={loc}&types=120300,120200&radius=800&offset=10"
+                    poi_data = json.loads(urllib.request.urlopen(around_url, timeout=5).read())
+                    if poi_data.get('status') == '1':
+                        for p in poi_data.get('pois', []):
+                            name = p.get('name', '').strip()
+                            if name and len(name) >= 2:
+                                keywords.append(name)
     except Exception as e:
-        print(f"高德API搜索失败: {e}")
-
+        print(f"[高德] 搜索失败: {e}")
+    
     # 去重
     seen = set()
-    result = []
-    for kw in keywords:
-        if kw not in seen:
-            seen.add(kw)
-            result.append(kw)
-    return result
+    return [kw for kw in keywords if kw not in seen and not seen.add(kw)]
 
 
 def _search_with_keywords(keywords: list) -> list:
@@ -476,7 +466,7 @@ def _search_with_keywords(keywords: list) -> list:
 
 
 def _search_items(address: str) -> list:
-    """搜索入口：策略A（分层地址关键词）"""
+    """搜索入口：地址分层（精准）+ 限时28秒"""
     return _search_with_keywords(_expand_keywords(address))
 
 
