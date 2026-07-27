@@ -71,10 +71,8 @@ export default function ResultsPage() {
         setIsExporting(true);
         try {
             const casesToExport = searchResult.allCases.filter(c => selectedIds.has(c.id));
-            // 直接发到 Render 后端
-            const exportUrl = 'https://npl-backed.onrender.com/api/export';
-
-            const response = await fetch(exportUrl, {
+            // 通过Vercel代理（同域，无CORS问题）
+            const response = await fetch('/api/export', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ cases: casesToExport }),
