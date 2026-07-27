@@ -627,7 +627,8 @@ def _filter_by_distance_time(items: list, address: str, property_type: str = '�
             if geocodes:
                 loc = geocodes[0].get('location', '').split(',')
                 col_coords = (float(loc[0]), float(loc[1]))
-        except: pass
+        except Exception:
+            pass
 
         result = []
         for item in items:
@@ -636,19 +637,23 @@ def _filter_by_distance_time(items: list, address: str, property_type: str = '�
             if dist == -1:
                 title = str(item.get('title', '') or item.get('参照物位置', '') or '')
                 case_addr = str(item.get('address', '') or '')
-                dist = _estimate_distance(address, case_addr or title, col_coords)
+                try:
+                    dist = _estimate_distance(address, case_addr or title, col_coords)
+                except Exception:
+                    dist = -1
                 item['distance_km'] = dist
 
             # 日期解析：直接从备注/标题正则提取（不依赖MTOP）
             days_old = 9999
             raw = (item.get('remark', '') or item.get('title', '') or '')
-            m = re.search(r'(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})', raw)
-            if m:
-                try:
+            try:
+                m = re.search(r'(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})', raw)
+                if m:
                     dt = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
                     days_old = (now - dt).days
-                except: pass
-            
+            except Exception:
+                pass
+
             # 严格时间过滤：能解析出日期的且超过1年的直接丢弃
             if days_old != 9999 and days_old > max_days:
                 continue
