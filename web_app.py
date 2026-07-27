@@ -704,7 +704,7 @@ def _filter_by_distance_time(items: list, address: str, property_type: str = '�
                         result.append(item)
                 if len(result) >= 3:
                     return result
-        return result if result else items
+        return result if result else []
     except Exception as e:
         print(f"[过滤异常] {e}")
         return items
@@ -783,13 +783,14 @@ def run_search(address, property_type=None, area=None):
         unique_raw = _dedup_items(all_raw)
         filtered_raw = _filter_items(unique_raw)
         
-        # 距离+时间过滤（物业类型映射）
+        # 先MTOP拿数据（含日期），再距离+时间过滤
+        _enrich_details(filtered_raw)
+        
         pt = property_type or '商业'
         type_map = {'residential': '住宅', 'commercial': '商业', '住宅': '住宅', '商业': '商业'}
         mapped_type = type_map.get(pt, pt)
         dist_filtered = _filter_by_distance_time(filtered_raw, address, mapped_type)
         
-        _enrich_details(dist_filtered)
         return _format_and_sort(dist_filtered, address)
     except Exception as e:
         print(f"搜索异常: {e}")
