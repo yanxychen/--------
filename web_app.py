@@ -388,86 +388,123 @@ def _expand_keywords(address: str) -> list:
     return result
 
 
-def _expand_keywords_b(address: str) -> list:
-    """使用高德API定位抵押物周边POI提取关键词（策略B）
-    1. 地理编码 → 获取抵押物经纬度
-    2. 周边搜索 → 找附近住宅小区/商业楼宇
-    3. 提取POI名称作关键词
-    """
-    import urllib.request, urllib.parse, json, re
-    amap_key = os.environ.get('AMAP_API_KEY', 'd7d06a2c20dacd8c861173b82cf70d71')
-    keywords = [address]
-    
-    # 1. 地理编码
+def _amap_geocode(address: str) -> tuple:
+    """高德地理编码：地址→(lng, lat)，失败返回None"""
+    import urllib.request, urllib.parse, json
+    key = os.environ.get('AMAP_API_KEY', 'd7d06a2c20dacd8c861173b82cf70d71')
+    url = f"https://restapi.amap.com/v3/geocode/geo?key={key}&address={urllib.parse.quote(address[:50])}"
     try:
-        geo_url = f"https://restapi.amap.com/v3/geocode/geo?key={amap_key}&address={urllib.parse.quote(address[:50])}"
-        data = json.loads(urllib.request.urlopen(geo_url, timeout=5).read())
+        data = json.loads(urllib.request.urlopen(url, timeout=5).read())
         if data.get('status') == '1' and data.get('geocodes'):
             loc = data['geocodes'][0].get('location', '')
-            print(f"[高德] 定位: {address} → {loc}")
-            
             if loc and ',' in loc:
-                # 2. 周边搜索住宅小区、商业写字楼（分开查）
-                for poi_type in ['120300', '120200']:
-                    around_url = f"https://restapi.amap.com/v3/place/around?key={amap_key}&location={loc}&types={poi_type}&radius=800&offset=10"
-                    poi_data = json.loads(urllib.request.urlopen(around_url, timeout=5).read())
-                    if poi_data.get('status') == '1':
-                        for p in poi_data.get('pois', []):
-                            name = p.get('name', '').strip()
-                            if name and len(name) >= 2:
-                                keywords.append(name)
-        else:
-            # 3. geocode失败，用inputtips兜底
-            tip_url = f"https://restapi.amap.com/v3/assistant/inputtips?key={amap_key}&keywords={urllib.parse.quote(address[:30])}"
-            tip_data = json.loads(urllib.request.urlopen(tip_url, timeout=5).read())
-            if tip_data.get('tips'):
-                tip = tip_data['tips'][0]
-                loc = tip.get('location', '')
-                if loc and ',' in loc:
-                    around_url = f"https://restapi.amap.com/v3/place/around?key={amap_key}&location={loc}&types=120300,120200&radius=800&offset=10"
-                    poi_data = json.loads(urllib.request.urlopen(around_url, timeout=5).read())
-                    if poi_data.get('status') == '1':
-                        for p in poi_data.get('pois', []):
-                            name = p.get('name', '').strip()
-                            if name and len(name) >= 2:
-                                keywords.append(name)
-    except Exception as e:
-        print(f"[高德] 搜索失败: {e}")
+                parts = loc.split(',')
+                return (float(parts[0]), float(parts[1]))
+    except: pass
+    return None
+
+
+def _nearby_poi_keywords(location: tuple, property_type: str = '商业', radius: int = 500) -> list:
+    """按物业类型搜索周边POI名称
+    # 按物业类型搜索周边POI名称
+    住宅→住宅小区(120300)
+    商业→购物中心(060100)/商务写字楼(120200)/商业街(180300)
+    工业→产业园区(140100)/工业大厦(141200)
+    返回按类型过滤的POI名称列表
+    """
+    import urllib.request, urllib.parse, json, re
+    key = os.environ.get('AMAP_API_KEY', 'd7d06a2c20dacd8c861173b82cf70d71')
+    loc_str = f"{location[0]},{location[1]}"
     
-    # 去重
+    type_map = {
+        '住宅': ['120300'],
+        '商业': ['060100', '120200', '180300'],
+        '工业': ['140100', '141200', '141100'],
+    }
+    type_kw_map = {
+        '住宅': ['住宅', '小区', '花园', '公寓'],
+        '商业': ['购物', '广场', '中心', '大厦', '写字楼', '商业', '商场'],
+        '工业': ['工业', '园区', '产业园', '科技园', '厂房', '工场'],
+    }
+    
+    names = []
     seen = set()
-    return [kw for kw in keywords if kw not in seen and not seen.add(kw)]
+    categories = type_map.get(property_type, type_map['商业'])
+    keywords = type_kw_map.get(property_type, type_kw_map['商业'])
+    
+    for cat in categories:
+        try:
+            url = f"https://restapi.amap.com/v3/place/around?key={key}&location={loc_str}&types={cat}&radius={radius}&offset=20"
+            data = json.loads(urllib.request.urlopen(url, timeout=5).read())
+            for p in data.get('pois', []):
+                name = p.get('name', '').strip()
+                ptype = p.get('type', '')
+                if name and name not in seen and len(name) >= 2:
+                    if any(kw in ptype for kw in keywords):
+                        # 清理POI名称：去掉括号备注（如"XX店"）
+                        clean = re.sub(r'[（(][^)）]*[)）]', '', name).strip()
+                        if clean and clean not in seen and len(clean) >= 2:
+                            # 过滤太短的名称（如"AIA"只有3字母，搜出来全是非房产）
+                            if len(clean) >= 4:
+                                seen.add(clean)
+                                names.append(clean)
+        except: pass
+    
+    return names
+
+
+def _expand_keywords_b(address: str, property_type: str = '商业') -> list:
+    """使用高德API定位抵押物周边POI提取关键词
+    property_type影响POI类型筛选
+    """
+    loc = _amap_geocode(address)
+    if not loc:
+        return [address]
+    
+    # 映射前端传的类型
+    type_map = {'residential': '住宅', 'commercial': '商业', '住宅': '住宅', '商业': '商业', '工业': '工业'}
+    mapped_type = type_map.get(property_type, '商业')
+    
+    keywords = [address]
+    for radius in [500, 1000, 2000, 3000]:
+        pois = _nearby_poi_keywords(loc, mapped_type, radius)
+        for p in pois:
+            if p not in keywords:
+                keywords.append(p)
+        if len(keywords) >= 20:
+            break
+    return keywords
 
 
 def _search_with_keywords(keywords: list) -> list:
-    """用关键词列表搜索拍卖案例，去重合并（限时30秒）"""
+    """用关键词列表搜索淘宝拍卖案例，去重合并（限时28秒）"""
     from asset_search_api import UnifiedAuctionSearcher
     import time
     searcher = UnifiedAuctionSearcher()
     all_raw = []
     seen_links = set()
-    deadline = time.time() + 28  # 28秒强制停止
+    deadline = time.time() + 28
     for kw in keywords:
         if time.time() > deadline:
             break
         try:
-            items = searcher.search_all(kw, platforms=['jd', 'taobao'])
+            items = searcher.search_all(kw, platforms=['taobao'])  # 仅淘宝
             for item in items:
                 link = item.get('link', '')
                 if link and link not in seen_links:
                     seen_links.add(link)
                     all_raw.append(item)
-            if len(all_raw) >= 30:
+            if len(all_raw) >= 20:
                 break
         except Exception as e:
             print(f"关键词 '{kw}' 搜索失败: {e}")
     searcher.cleanup()
-    return all_raw[:40]  # 最多返回40条
+    return all_raw[:20]
 
 
-def _search_items(address: str) -> list:
-    """搜索入口：地址分层（精准）+ 限时28秒"""
-    return _search_with_keywords(_expand_keywords(address))
+def _search_items(address: str, property_type: str = '商业') -> list:
+    """搜索入口：高德POI关键词→搜淘宝→去重→限时"""
+    return _search_with_keywords(_expand_keywords_b(address, property_type))
 
 
 def _search_items_b(address: str) -> list:
@@ -700,7 +737,7 @@ def _filter_items(items: list) -> list:
     return kept
 
 
-def _enrich_details(items: list, max_items: int = 10):
+def _enrich_details(items: list, max_items: int = 20):
     """使用本机已登录 Chrome 抓取淘宝详情页（最多max_items条）"""
     taobao_items = [i for i in items if i.get('platform') == 'taobao']
     fetch_limit = min(max_items, len(taobao_items))
@@ -744,7 +781,7 @@ def _format_and_sort(raw_items: list, address: str) -> dict:
 def run_search(address, property_type=None, area=None):
     """执行搜索并返回前端期望格式"""
     try:
-        all_raw = _search_items(address)
+        all_raw = _search_items(address, property_type or '商业')
         unique_raw = _dedup_items(all_raw)
         filtered_raw = _filter_items(unique_raw)
         
