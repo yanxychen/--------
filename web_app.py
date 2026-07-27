@@ -405,49 +405,33 @@ def _amap_geocode(address: str) -> tuple:
 
 
 def _nearby_poi_keywords(location: tuple, property_type: str = '商业', radius: int = 500) -> list:
-    """按物业类型搜索周边POI名称
-    # 按物业类型搜索周边POI名称
-    住宅→住宅小区(120300)
-    商业→购物中心(060100)/商务写字楼(120200)/商业街(180300)
-    工业→产业园区(140100)/工业大厦(141200)
-    返回按类型过滤的POI名称列表
-    """
+    """按物业类型搜索周边POI名称（类型过滤，只查2组类型码）"""
     import urllib.request, urllib.parse, json, re
     key = os.environ.get('AMAP_API_KEY', 'd7d06a2c20dacd8c861173b82cf70d71')
     loc_str = f"{location[0]},{location[1]}"
     
-    type_map = {
-        '住宅': ['120300'],
-        '商业': ['060100', '120200', '180300'],
-        '工业': ['140100', '141200', '141100'],
+    # 按物业类型选择高德分类码（只查2组，快）
+    type_codes = {
+        '住宅': ['120300'],                    # 住宅小区
+        '商业': ['120200', '060100'],           # 写字楼+购物中心
+        '工业': ['141200', '140100'],           # 工业大厦+产业园区
     }
-    type_kw_map = {
-        '住宅': ['住宅', '小区', '花园', '公寓'],
-        '商业': ['购物', '广场', '中心', '大厦', '写字楼', '商业', '商场'],
-        '工业': ['工业', '园区', '产业园', '科技园', '厂房', '工场'],
-    }
+    codes = type_codes.get(property_type, type_codes['商业'])
     
     names = []
     seen = set()
-    categories = type_map.get(property_type, type_map['商业'])
-    keywords = type_kw_map.get(property_type, type_kw_map['商业'])
     
-    for cat in categories:
+    for code in codes:
         try:
-            url = f"https://restapi.amap.com/v3/place/around?key={key}&location={loc_str}&types={cat}&radius={radius}&offset=20"
+            url = f"https://restapi.amap.com/v3/place/around?key={key}&location={loc_str}&types={code}&radius={radius}&offset=15"
             data = json.loads(urllib.request.urlopen(url, timeout=5).read())
             for p in data.get('pois', []):
                 name = p.get('name', '').strip()
-                ptype = p.get('type', '')
-                if name and name not in seen and len(name) >= 2:
-                    if any(kw in ptype for kw in keywords):
-                        # 清理POI名称：去掉括号备注（如"XX店"）
-                        clean = re.sub(r'[（(][^)）]*[)）]', '', name).strip()
-                        if clean and clean not in seen and len(clean) >= 2:
-                            # 过滤太短的名称（如"AIA"只有3字母，搜出来全是非房产）
-                            if len(clean) >= 4:
-                                seen.add(clean)
-                                names.append(clean)
+                if name and len(name) >= 2:
+                    clean = re.sub(r'[（(][^)）]*[)）]', '', name).strip()
+                    if clean and clean not in seen and len(clean) >= 4:
+                        seen.add(clean)
+                        names.append(clean)
         except: pass
     
     return names
