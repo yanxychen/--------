@@ -446,8 +446,9 @@ def _expand_keywords_b(address: str, property_type: str = '商业') -> list:
     type_map = {'residential': '住宅', 'commercial': '商业', '住宅': '住宅', '商业': '商业', '工业': '工业'}
     mapped_type = type_map.get(property_type, '商业')
     
-    # 只搜500m
-    pois = _nearby_poi_keywords(loc, mapped_type, 500)
+    # 住宅/商业3km，工业10km
+    radius = 10.0 if mapped_type == '工业' else 3.0
+    pois = _nearby_poi_keywords(loc, mapped_type, radius)
     
     # 过滤无意义关键词（外卖柜/收货区/太短的）
     useless = ['外卖', '收货', '出入口', '垃圾站', '保安亭', '电梯', '楼梯', '通道']
@@ -486,12 +487,10 @@ def _search_with_keywords(keywords: list) -> list:
                 if link and link not in seen_links:
                     seen_links.add(link)
                     all_raw.append(item)
-            if len(all_raw) >= 20:
-                break
         except Exception as e:
             print(f"关键词 '{kw}' 搜索失败: {e}")
     searcher.cleanup()
-    return all_raw[:20]
+    return all_raw
 
 
 def _search_items(address: str, property_type: str = '商业') -> list:
@@ -631,91 +630,56 @@ def _estimate_distance(collateral: str, case_addr: str, col_coords_cache=None) -
 
 
 def _filter_by_distance_time(items: list, address: str, property_type: str = '商业') -> list:
-    """按距离+时间过滤案例，逐步放宽（异常安全）"""
+    """严格过滤：距离+时间，不留情面"""
     try:
-        import re
         from datetime import datetime
-        
         now = datetime.now()
         is_industrial = property_type in ('工业', '土地', 'other')
-        dist_tiers = [1.0, 3.0, 5.0] if not is_industrial else [3.0, 5.0, 10.0]
-        time_tiers = [365]  # 只限制1年内
-        
-        # 缓存抵押物坐标（只查一次高德）
-        col_coords = None
-        try:
-            import re as _re, json, urllib.request, urllib.parse
-            amap_key = os.environ.get('AMAP_API_KEY', 'd7d06a2c20dacd8c861173b82cf70d71')
-            url = f"https://restapi.amap.com/v3/assistant/inputtips?key={amap_key}&keywords={urllib.parse.quote(address[:40])}"
-            ch = _re.search(r'(.+?[市州])', address)
-            if ch: url += f"&city={urllib.parse.quote(ch.group(1))}"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            resp = json.loads(urllib.request.urlopen(req, timeout=5).read())
-            if resp.get('tips'):
-                loc = resp['tips'][0].get('location', '')
-                if loc and ',' in loc:
-                    parts = loc.split(',')
-                    col_coords = (float(parts[0]), float(parts[1]))
-        except: pass
-        
-        scored = []
+        max_dist = 10.0 if is_industrial else 3.0
+        max_days = 365
+
+        result = []
         for item in items:
+            # 计算距离
             title = str(item.get('title', '') or item.get('参照物位置', '') or '')
             case_addr = str(item.get('address', '') or '')
-            dist = _estimate_distance(address, case_addr or title, col_coords)
-            
+            dist = _estimate_distance(address, case_addr or title, None)
+            item['distance_km'] = dist
+
+            # 计算天数
             start_date_str = str(item.get('detail', {}).get('start_date', '') or item.get('start_date', '') or item.get('title', '') or '')
+            import re as _re
             days_old = 9999
-            # 尝试多种日期格式
-            for fmt in ['%Y-%m-%d', '%Y/%m/%d', '%Y年%m月%d日']:
+            for fmt in ['%Y-%m-%d', '%Y/%m/%d']:
                 try:
                     dt = datetime.strptime(start_date_str[:10].replace('年','-').replace('月','-').replace('日',''), '%Y-%m-%d')
                     days_old = (now - dt).days
                     break
                 except: pass
-            # 如果还没找到，从备注里提取
             if days_old == 9999:
-                import re as _re2
-                m = _re2.search(r'(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})', item.get('remark', '') or item.get('title', '') or '')
+                m = _re.search(r'(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})', item.get('remark', '') or item.get('title', '') or '')
                 if m:
                     try:
                         dt = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
                         days_old = (now - dt).days
                     except: pass
-            if days_old == 9999:
-                scored.append({'item': item, 'distance_km': dist, 'days_old': 9999})
-            else:
-                scored.append({'item': item, 'distance_km': dist, 'days_old': days_old})
-        
-        for dist_tier in dist_tiers:
-            for time_tier in time_tiers:
-                # 按距离排序：有距离的优先（从近到远），未知距离的最后
-                sorted_scored = sorted(scored, key=lambda s: (
-                    0 if s['distance_km'] is not None and s['distance_km'] > 0 else 1 if s['distance_km'] == -1 else 2,
-                    s['distance_km'] if s['distance_km'] is not None and s['distance_km'] > 0 else 999,
-                ))
-                result = []
-                seen = set()
-                for s in sorted_scored:
-                    item = s['item']
-                    link = str(item.get('link', ''))
-                    if link in seen: continue
-                    # -1表示未知距离，只在最后档位才允许通过
-                    if s['distance_km'] == -1:
-                        dist_ok = (dist_tier == dist_tiers[-1])
-                    else:
-                        dist_ok = s['distance_km'] <= 0 or s['distance_km'] <= dist_tier
-                    # 未知日期不通过，已知日期判断
-                    time_ok = s['days_old'] != 9999 and s['days_old'] <= time_tier
-                    if dist_ok and time_ok:
-                        seen.add(link)
-                        item['distance_km'] = s['distance_km']
-                        result.append(item)
-                if len(result) >= 3:
-                    return result
-        return result if result else []
+            item['days_old'] = days_old
+
+            # 严格过滤
+            if dist != -1 and dist > max_dist:
+                continue
+            if days_old == 9999 or days_old > max_days:
+                continue
+
+            result.append(item)
+
+        # 按距离排序（近的在前）
+        result.sort(key=lambda x: x.get('distance_km', 999) if x.get('distance_km', -1) != -1 else 999)
+        return result
     except Exception as e:
         print(f"[过滤异常] {e}")
+        import traceback
+        traceback.print_exc()
         return items
 
 
