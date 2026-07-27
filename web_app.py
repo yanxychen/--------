@@ -438,25 +438,27 @@ def _nearby_poi_keywords(location: tuple, property_type: str = '商业', radius:
 
 
 def _expand_keywords_b(address: str, property_type: str = '商业') -> list:
-    """使用高德API定位抵押物周边POI提取关键词
-    property_type影响POI类型筛选
-    """
+    """高德POI关键词（限10个，过滤无效名称）"""
     loc = _amap_geocode(address)
     if not loc:
         return [address]
     
-    # 映射前端传的类型
     type_map = {'residential': '住宅', 'commercial': '商业', '住宅': '住宅', '商业': '商业', '工业': '工业'}
     mapped_type = type_map.get(property_type, '商业')
     
+    # 只搜500m
+    pois = _nearby_poi_keywords(loc, mapped_type, 500)
+    
+    # 过滤无意义关键词（外卖柜/收货区/太短的）
+    useless = ['外卖', '收货', '出入口', '垃圾站', '保安亭', '电梯', '楼梯', '通道']
     keywords = [address]
-    for radius in [500, 1000, 2000, 3000]:
-        pois = _nearby_poi_keywords(loc, mapped_type, radius)
-        for p in pois:
-            if p not in keywords:
-                keywords.append(p)
-        if len(keywords) >= 20:
+    for p in pois:
+        if len(keywords) >= 20:  # 给淘宝搜索更多素材，28秒截停会自动限制
             break
+        if any(u in p for u in useless):
+            continue
+        if p not in keywords:
+            keywords.append(p)
     return keywords
 
 
