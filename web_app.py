@@ -630,7 +630,7 @@ def _filter_by_distance_time(items: list, address: str, property_type: str = '�
         now = datetime.now()
         is_industrial = property_type in ('工业', '土地', 'other')
         dist_tiers = [1.0, 3.0, 5.0] if not is_industrial else [3.0, 5.0, 10.0]
-        time_tiers = [365, 730]
+        time_tiers = [365]  # 只限制1年内
         
         # 缓存抵押物坐标（只查一次高德）
         col_coords = None
@@ -662,11 +662,10 @@ def _filter_by_distance_time(items: list, address: str, property_type: str = '�
                     dt = datetime.strptime(start_date_str[:10], '%Y-%m-%d')
                     days_old = (now - dt).days
                 except: pass
-            # 未知日期允许通过（设为0）
             if days_old == 9999:
-                days_old = 0
-            
-            scored.append({'item': item, 'distance_km': dist, 'days_old': days_old})
+                scored.append({'item': item, 'distance_km': dist, 'days_old': 9999})
+            else:
+                scored.append({'item': item, 'distance_km': dist, 'days_old': days_old})
         
         for dist_tier in dist_tiers:
             for time_tier in time_tiers:
@@ -686,7 +685,9 @@ def _filter_by_distance_time(items: list, address: str, property_type: str = '�
                         dist_ok = (dist_tier == dist_tiers[-1])
                     else:
                         dist_ok = s['distance_km'] <= 0 or s['distance_km'] <= dist_tier
-                    if dist_ok and s['days_old'] <= time_tier:
+                    # 未知日期只有最后档位才允许
+                    time_ok = (s['days_old'] == 9999 and time_tier == time_tiers[-1]) or (s['days_old'] <= time_tier)
+                    if dist_ok and time_ok:
                         seen.add(link)
                         item['distance_km'] = s['distance_km']
                         result.append(item)
