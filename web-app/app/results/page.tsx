@@ -66,10 +66,11 @@ export default function ResultsPage() {
         router.push('/');
     };
 
-    const handleExport = async () => {
-        if (!searchResult?.allCases) return;
+    const handleExport = async (selectedIds: Set<string>) => {
+        if (!searchResult?.allCases || selectedIds.size === 0) return;
         setIsExporting(true);
         try {
+            const casesToExport = searchResult.allCases.filter(c => selectedIds.has(c.id));
             const backendUrl = (window as any).__APP_CONFIG?.backendUrl || '';
             const exportUrl = backendUrl 
                 ? backendUrl.replace('/api/search', '/api/export')
@@ -78,7 +79,7 @@ export default function ResultsPage() {
             const response = await fetch(exportUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ cases: searchResult.allCases }),
+                body: JSON.stringify({ cases: casesToExport }),
             });
 
             if (response.ok) {

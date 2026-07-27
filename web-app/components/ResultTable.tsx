@@ -11,24 +11,25 @@ interface ResultTableProps {
     searchPropertyType: string;
     onBack: () => void;
     isExporting: boolean;
-    onExport: () => void;
+    onExport: (selectedIds: Set<string>) => void;
     selfAuctionCount?: number;
     totalCount?: number;
 }
 
 const tableHeaders = [
+        '序号',
         '参照物位置',
-        '土地面积 (㎡)',
-        '建筑面积 (㎡)',
+        '土地面积 (m²)',
+        '建筑面积 (m²)',
         '市场价值(万元)',
-        '建筑单价(元/㎡)',
+        '建筑单价(元/m²)',
         '数据来源',
         '距离(km)',
         '备注',
         '价格类型',
     ];
 
-type SortKey = 'score' | 'buildingArea' | 'startDate' | 'distanceKm' | 'unitPrice';
+type SortKey = 'buildingArea' | 'startDate' | 'distanceKm' | 'unitPrice';
 type SortOrder = 'asc' | 'desc';
 
 export default function ResultTable({
@@ -42,9 +43,10 @@ export default function ResultTable({
     selfAuctionCount = 0,
     totalCount = 0,
 }: ResultTableProps) {
-    const [sortKey, setSortKey] = useState<SortKey>('startDate');
-    const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
+    const [sortKey, setSortKey] = useState<SortKey>('distanceKm');
+    const [sortOrder, setSortOrder] = useState<SortOrder>('asc');
     const [currentPage, setCurrentPage] = useState(1);
+    const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const pageSize = 10;
 
     const propertyTypeLabels: Record<string, string> = {
@@ -70,10 +72,6 @@ export default function ResultTable({
             let valB: number = 0;
 
             switch (sortKey) {
-                case 'score':
-                    valA = a.score || 0;
-                    valB = b.score || 0;
-                    break;
                 case 'buildingArea':
                     valA = a.buildingAreaValue || a.buildingArea || 0;
                     valB = b.buildingAreaValue || b.buildingArea || 0;
@@ -115,6 +113,29 @@ export default function ResultTable({
         }
     };
 
+    const toggleSelect = (id: string) => {
+        const next = new Set(selectedIds);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        setSelectedIds(next);
+    };
+
+    const toggleSelectAll = () => {
+        if (selectedIds.size === pagedCases.length) {
+            setSelectedIds(new Set());
+        } else {
+            setSelectedIds(new Set(pagedCases.map(c => c.id)));
+        }
+    };
+
+    const handleExportClick = () => {
+        if (selectedIds.size === 0) {
+            alert('请先勾选要导出的案例');
+            return;
+        }
+        onExport(selectedIds);
+    };
+
     const SortIcon = ({ active, order }: { active: boolean; order: SortOrder }) => {
         if (!active) return <ArrowUpDown className="w-3 h-3 ml-1 opacity-50" />;
         return order === 'asc' 
@@ -127,8 +148,16 @@ export default function ResultTable({
             key={item.id}
             className={`border-b border-gray-100 hover:bg-gray-50 transition-colors ${
                 item.isSelfAuction ? 'bg-amber-50' : ''
-            }`}
+            } ${selectedIds.has(item.id) ? 'bg-primary-50' : ''}`}
         >
+            <td className="px-3 py-3 align-top">
+                <input
+                    type="checkbox"
+                    checked={selectedIds.has(item.id)}
+                    onChange={() => toggleSelect(item.id)}
+                    className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 cursor-pointer"
+                />
+            </td>
             <td className="px-4 py-3 text-sm align-top min-w-[200px] max-w-[400px]">
                 <div className="whitespace-pre-wrap break-all">{item.referenceLocation}</div>
                 {item.isSelfAuction && (
@@ -207,7 +236,7 @@ export default function ResultTable({
                 </button>
 
                 <button
-                    onClick={onExport}
+                    onClick={handleExportClick}
                     disabled={isExporting || allCases.length === 0}
                     className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all ${
                         isExporting || allCases.length === 0
@@ -223,7 +252,7 @@ export default function ResultTable({
                     ) : (
                         <>
                             <FileSpreadsheet className="w-4 h-4" />
-                            导出Excel
+                            导出勾选 ({selectedIds.size})
                         </>
                     )}
                 </button>
@@ -252,14 +281,15 @@ export default function ResultTable({
                 <div className="px-6 py-4 bg-gradient-to-r from-primary-600 to-primary-500 text-white">
                     <h2 className="text-lg font-bold flex items-center gap-2">
                         ⭐ 精选案例（Top 3）
-                        <span className="text-sm font-normal opacity-80">按评分排序，最具参考价值</span>
+                        <span className="text-sm font-normal opacity-80">按距离排序</span>
                     </h2>
                 </div>
                 <div className="overflow-x-auto">
                     <table className="w-full">
                         <thead className="bg-primary-50">
                             <tr>
-                                {tableHeaders.map((header) => (
+                                <th className="px-3 py-3 w-10"></th>
+                                {tableHeaders.slice(1).map((header) => (
                                     <th
                                         key={header}
                                         className="px-4 py-3 text-left text-sm font-semibold text-primary-800"
@@ -308,17 +338,6 @@ export default function ResultTable({
                                 <SortIcon active={sortKey === 'startDate'} order={sortOrder} />
                             </button>
                             <button
-                                onClick={() => handleSort('score')}
-                                className={`px-3 py-1 rounded-lg flex items-center transition-colors ${
-                                    sortKey === 'score'
-                                        ? 'bg-primary-100 text-primary-700 font-medium'
-                                        : 'text-gray-600 hover:bg-gray-100'
-                                }`}
-                            >
-                                评分
-                                <SortIcon active={sortKey === 'score'} order={sortOrder} />
-                            </button>
-                            <button
                                 onClick={() => handleSort('distanceKm')}
                                 className={`px-3 py-1 rounded-lg flex items-center transition-colors ${
                                     sortKey === 'distanceKm'
@@ -358,7 +377,15 @@ export default function ResultTable({
                     <table className="w-full">
                         <thead className="bg-gray-100">
                             <tr>
-                                {tableHeaders.map((header) => (
+                                <th className="px-3 py-3 w-10">
+                                    <input
+                                        type="checkbox"
+                                        checked={selectedIds.size === pagedCases.length && pagedCases.length > 0}
+                                        onChange={toggleSelectAll}
+                                        className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 cursor-pointer"
+                                    />
+                                </th>
+                                {tableHeaders.slice(1).map((header) => (
                                     <th
                                         key={header}
                                         className="px-4 py-3 text-left text-sm font-semibold text-gray-700"
