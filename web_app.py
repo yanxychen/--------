@@ -453,11 +453,17 @@ def _expand_keywords_b(address: str, property_type: str = '商业') -> list:
     useless = ['外卖', '收货', '出入口', '垃圾站', '保安亭', '电梯', '楼梯', '通道']
     keywords = [address]
     for p in pois:
-        if len(keywords) >= 20:  # 给淘宝搜索更多素材，28秒截停会自动限制
+        if len(keywords) >= 20:
             break
         if any(u in p for u in useless):
             continue
-        if p not in keywords:
+        if len(p) < 3:  # 太短的无用（如 A座、D座）
+            continue
+        # 方案A: 地址前缀 + 新关键词 → 限定本地区域搜索
+        combined = f"{address} {p}"
+        if combined not in keywords:
+            keywords.append(combined)
+        elif p not in keywords:
             keywords.append(p)
     return keywords
 
@@ -608,14 +614,17 @@ def _estimate_distance(collateral: str, case_addr: str, col_coords_cache=None) -
                 'road': road.group(1) if road else ''}
     col = extract_areas(collateral)
     case = extract_areas(case_addr)
+    # 精确匹配优先
     if col['town'] and col['town'] == case['town']: return 3.0
     if col['street'] and col['street'] == case['street']: return 1.0
     if col['road'] and col['road'] == case['road']: return 3.0
-    if col['district'] and col['district'] == case['district']: 
-        # 同区不同镇 → 15km（南海区很大，大沥到千灯湖可能30km）
+    # 同区判断：如果案例有镇而抵押物没有镇，说明可能是不同镇
+    if col['district'] and col['district'] == case['district']:
         if col['town'] and case['town'] and col['town'] != case['town']:
-            return 15.0
-        return 5.0
+            return 15.0  # 同区不同镇
+        if not col['town'] and case['town']:
+            return 15.0  # 抵押物无镇信息，保守处理
+        return 5.0      # 同区同镇或无法区分
     if col['city'] and col['city'] == case['city']: return 10.0
     if col['city'] and case['city']: return 50.0
     return -1

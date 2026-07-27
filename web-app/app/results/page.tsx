@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import ResultTable from '@/components/ResultTable';
 import type { Case, SearchResponse } from '@/lib/searchService';
+import { exportToExcel } from '@/lib/clientExport';
 
 export default function ResultsPage() {
     const router = useRouter();
@@ -70,29 +71,7 @@ export default function ResultsPage() {
         if (!searchResult?.allCases || selectedIds.size === 0) return;
         setIsExporting(true);
         try {
-            const casesToExport = searchResult.allCases.filter(c => selectedIds.has(c.id));
-            // 通过Vercel代理（同域，无CORS问题）
-            const response = await fetch('/api/export', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ cases: casesToExport }),
-            });
-
-            if (response.ok) {
-                const blob = await response.blob();
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                const timestamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-                a.download = `抵押物估值案例_${timestamp}.xlsx`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                window.URL.revokeObjectURL(url);
-            } else {
-                const err = await response.json().catch(() => ({}));
-                alert(err.message || '导出失败');
-            }
+            await exportToExcel(searchResult.allCases, selectedIds);
         } catch (error) {
             console.error('导出失败:', error);
             alert('导出失败，请稍后重试');
