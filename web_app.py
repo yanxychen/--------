@@ -560,73 +560,50 @@ def ab_test():
 
 
 def _estimate_distance(collateral: str, case_addr: str, col_coords_cache=None) -> float:
-    """估算距离（公里）：有坐标用高德驾车距离，无坐标用文本估算"""
+    """估算距离（公里）：高德geocode坐标 + Haversine直线距离（不用文本猜）"""
     if not case_addr or not collateral:
         return -1
-    import re, json, urllib.request, urllib.parse
-    
+    import re, json, urllib.request, urllib.parse, math
+
     amap_key = os.environ.get('AMAP_API_KEY', 'd7d06a2c20dacd8c861173b82cf70d71')
-    
-    # 如果有抵押物坐标，尝试高德驾车距离（仅对知名地标有效）
-    if col_coords_cache:
+
+    def geocode(addr: str):
         try:
-            # 先查案例坐标
-            c_url = f"https://restapi.amap.com/v3/assistant/inputtips?key={amap_key}&keywords={urllib.parse.quote(case_addr[:40])}"
-            req = urllib.request.Request(c_url, headers={'User-Agent': 'Mozilla/5.0'})
-            resp = json.loads(urllib.request.urlopen(req, timeout=2).read())
-            if resp.get('tips'):
-                loc = resp['tips'][0].get('location', '')
-                if loc and ',' in loc:
-                    parts = loc.split(',')
-                    dst_url = f"https://restapi.amap.com/v3/direction/driving?key={amap_key}&origin={col_coords_cache[0]},{col_coords_cache[1]}&destination={float(parts[0])},{float(parts[1])}"
-                    req2 = urllib.request.Request(dst_url, headers={'User-Agent': 'Mozilla/5.0'})
-                    data = json.loads(urllib.request.urlopen(req2, timeout=3).read())
-                    if data.get('route') and data['route'].get('paths'):
-                        dist_m = float(data['route']['paths'][0].get('distance', 0))
-                        if dist_m > 0:
-                            return round(dist_m / 1000, 1)
-        except: pass
-    
-    # 文本估算（快速，不需要网络）
-    def extract_areas(addr):
-        city = re.search(r'([\u4e00-\u9fff]+?[市州])', addr)
-        if not city:
-            known = ['北京','上海','广州','深圳','杭州','佛山','东莞','成都','武汉','南京',
-                     '苏州','天津','重庆','宁波','长沙','西安','合肥','郑州','青岛','厦门',
-                     '福州','昆明','大连','无锡','珠海','中山','惠州','沈阳','济南','南宁',
-                     '贵阳','海口','三亚','拉萨']
-            for c in known:
-                if c in addr:
-                    city = c + '市'
-                    break
-            if not city: city = ''
-        else:
-            city = city.group(1)
-        dm = re.findall(r'([\u4e00-\u9fff]{2}[区县])', addr)
-        district = dm[-1] if dm else ''
-        town = re.search(r'([\u4e00-\u9fff]{2,3}(?:镇|乡))', addr)
-        street = re.search(r'([\u4e00-\u9fff]+?[街道])', addr)
-        road = re.search(r'([\u4e00-\u9fff]+?(?:路|街|大道|公路))', addr)
-        return {'city': city, 'district': district,
-                'town': town.group(1) if town else '',
-                'street': street.group(1) if street else '',
-                'road': road.group(1) if road else ''}
-    col = extract_areas(collateral)
-    case = extract_areas(case_addr)
-    # 精确匹配优先
-    if col['town'] and col['town'] == case['town']: return 3.0
-    if col['street'] and col['street'] == case['street']: return 1.0
-    if col['road'] and col['road'] == case['road']: return 3.0
-    # 同区判断：如果案例有镇而抵押物没有镇，说明可能是不同镇
-    if col['district'] and col['district'] == case['district']:
-        if col['town'] and case['town'] and col['town'] != case['town']:
-            return 15.0  # 同区不同镇
-        if not col['town'] and case['town']:
-            return 15.0  # 抵押物无镇信息，保守处理
-        return 5.0      # 同区同镇或无法区分
-    if col['city'] and col['city'] == case['city']: return 10.0
-    if col['city'] and case['city']: return 50.0
-    return -1
+            url = (
+                f"https://restapi.amap.com/v3/geocode/geo"
+                f"?key={amap_key}&address={urllib.parse.quote(addr[:100])}"
+            )
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            data = json.loads(urllib.request.urlopen(req, timeout=3).read())
+            geocodes = data.get('geocodes', [])
+            if geocodes:
+                loc = geocodes[0].get('location', '').split(',')
+                return (float(loc[0]), float(loc[1]))
+        except Exception:
+            pass
+        return None
+
+    def haversine(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
+        R = 6371.0
+        phi1, phi2 = math.radians(lat1), math.radians(lat2)
+        d_phi = math.radians(lat2 - lat1)
+        d_lambda = math.radians(lon2 - lon1)
+        a = math.sin(d_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        return round(R * c, 1)
+
+    # 1. 抵押物坐标：优先用调用方传入的缓存
+    col_coords = col_coords_cache or geocode(collateral)
+    if not col_coords:
+        return -1
+
+    # 2. 案例坐标
+    case_coords = geocode(case_addr)
+    if not case_coords:
+        return -1
+
+    # 3. 返回直线距离 km
+    return haversine(col_coords[0], col_coords[1], case_coords[0], case_coords[1])
 
 
 def _filter_by_distance_time(items: list, address: str, property_type: str = '商业') -> list:
