@@ -639,32 +639,17 @@ def _filter_by_distance_time(items: list, address: str, property_type: str = '�
                 dist = _estimate_distance(address, case_addr or title, col_coords)
                 item['distance_km'] = dist
 
-            # 日期解析：detail→mtop_api→标题/备注正则→放行
+            # 日期解析：直接从备注/标题正则提取（不依赖MTOP）
             days_old = 9999
-            start_date_str = ''
-            if isinstance(item.get('detail'), dict):
-                sd = item['detail'].get('start_date', '')
-                if sd:
-                    start_date_str = str(sd)
-            if not start_date_str:
-                link = str(item.get('link', ''))
-                iid_match = _re.search(r'/(\d+)\.htm', link)
-                if iid_match:
-                    from taobao_mtop_api import get_taobao_detail_mtop
-                    mt = get_taobao_detail_mtop(iid_match.group(1))
-                    sd = mt.get('start_date', '') or mt.get('consult_price_end_date', '')
-                    if sd:
-                        start_date_str = str(sd)
-            if not start_date_str:
-                raw = (item.get('title', '') or item.get('remark', '') or '')
-                m = _re.search(r'(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})', raw)
-                if m:
-                    try:
-                        dt = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-                        days_old = (now - dt).days
-                    except: pass
-
-            # 只有能解析出日期的才按天数过滤；无法解析的默认放行
+            raw = (item.get('remark', '') or item.get('title', '') or '')
+            m = re.search(r'(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})', raw)
+            if m:
+                try:
+                    dt = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+                    days_old = (now - dt).days
+                except: pass
+            
+            # 严格时间过滤：能解析出日期的且超过1年的直接丢弃
             if days_old != 9999 and days_old > max_days:
                 continue
 
