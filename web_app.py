@@ -630,7 +630,7 @@ def _estimate_distance(collateral: str, case_addr: str, col_coords_cache=None) -
 
 
 def _filter_by_distance_time(items: list, address: str, property_type: str = '商业') -> list:
-    """严格过滤：距离+时间，不留情面"""
+    """严格过滤：距离+时间"""
     try:
         from datetime import datetime
         now = datetime.now()
@@ -638,42 +638,64 @@ def _filter_by_distance_time(items: list, address: str, property_type: str = '�
         max_dist = 10.0 if is_industrial else 3.0
         max_days = 365
 
+        # 缓存抵押物坐标只查一次
+        col_coords = None
+        import re as _re, json, urllib.request, urllib.parse
+        amap_key = os.environ.get('AMAP_API_KEY', 'd7d06a2c20dacd8c861173b82cf70d71')
+        try:
+            geo_url = f"https://restapi.amap.com/v3/geocode/geo?key={amap_key}&address={urllib.parse.quote(address[:100])}"
+            req = urllib.request.Request(geo_url, headers={'User-Agent': 'Mozilla/5.0'})
+            resp = json.loads(urllib.request.urlopen(req, timeout=3).read())
+            geocodes = resp.get('geocodes', [])
+            if geocodes:
+                loc = geocodes[0].get('location', '').split(',')
+                col_coords = (float(loc[0]), float(loc[1]))
+        except: pass
+
         result = []
         for item in items:
-            # 计算距离
-            title = str(item.get('title', '') or item.get('参照物位置', '') or '')
-            case_addr = str(item.get('address', '') or '')
-            dist = _estimate_distance(address, case_addr or title, None)
-            item['distance_km'] = dist
+            # 用上游算好的距离或现场算
+            dist = item.get('distance_km', -1)
+            if dist == -1:
+                title = str(item.get('title', '') or item.get('参照物位置', '') or '')
+                case_addr = str(item.get('address', '') or '')
+                dist = _estimate_distance(address, case_addr or title, col_coords)
+                item['distance_km'] = dist
 
-            # 计算天数
-            start_date_str = str(item.get('detail', {}).get('start_date', '') or item.get('start_date', '') or item.get('title', '') or '')
-            import re as _re
+            # 日期解析：detail→mtop_api→标题/备注正则→放行
             days_old = 9999
-            for fmt in ['%Y-%m-%d', '%Y/%m/%d']:
-                try:
-                    dt = datetime.strptime(start_date_str[:10].replace('年','-').replace('月','-').replace('日',''), '%Y-%m-%d')
-                    days_old = (now - dt).days
-                    break
-                except: pass
-            if days_old == 9999:
-                m = _re.search(r'(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})', item.get('remark', '') or item.get('title', '') or '')
+            start_date_str = ''
+            if isinstance(item.get('detail'), dict):
+                sd = item['detail'].get('start_date', '')
+                if sd:
+                    start_date_str = str(sd)
+            if not start_date_str:
+                link = str(item.get('link', ''))
+                iid_match = _re.search(r'/(\d+)\.htm', link)
+                if iid_match:
+                    from taobao_mtop_api import get_taobao_detail_mtop
+                    mt = get_taobao_detail_mtop(iid_match.group(1))
+                    sd = mt.get('start_date', '') or mt.get('consult_price_end_date', '')
+                    if sd:
+                        start_date_str = str(sd)
+            if not start_date_str:
+                raw = (item.get('title', '') or item.get('remark', '') or '')
+                m = _re.search(r'(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})', raw)
                 if m:
                     try:
                         dt = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
                         days_old = (now - dt).days
                     except: pass
-            item['days_old'] = days_old
 
-            # 严格过滤
-            if dist != -1 and dist > max_dist:
+            # 只有能解析出日期的才按天数过滤；无法解析的默认放行
+            if days_old != 9999 and days_old > max_days:
                 continue
-            if days_old == 9999 or days_old > max_days:
+
+            if dist != -1 and dist > max_dist:
                 continue
 
             result.append(item)
 
-        # 按距离排序（近的在前）
         result.sort(key=lambda x: x.get('distance_km', 999) if x.get('distance_km', -1) != -1 else 999)
         return result
     except Exception as e:
