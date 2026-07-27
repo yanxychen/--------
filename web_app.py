@@ -655,13 +655,24 @@ def _filter_by_distance_time(items: list, address: str, property_type: str = '�
             case_addr = str(item.get('address', '') or '')
             dist = _estimate_distance(address, case_addr or title, col_coords)
             
-            start_date_str = str(item.get('start_date', '') or '')
+            start_date_str = str(item.get('detail', {}).get('start_date', '') or item.get('start_date', '') or item.get('title', '') or '')
             days_old = 9999
-            if len(start_date_str) >= 10:
+            # 尝试多种日期格式
+            for fmt in ['%Y-%m-%d', '%Y/%m/%d', '%Y年%m月%d日']:
                 try:
-                    dt = datetime.strptime(start_date_str[:10], '%Y-%m-%d')
+                    dt = datetime.strptime(start_date_str[:10].replace('年','-').replace('月','-').replace('日',''), '%Y-%m-%d')
                     days_old = (now - dt).days
+                    break
                 except: pass
+            # 如果还没找到，从备注里提取
+            if days_old == 9999:
+                import re as _re2
+                m = _re2.search(r'(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})', item.get('remark', '') or item.get('title', '') or '')
+                if m:
+                    try:
+                        dt = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+                        days_old = (now - dt).days
+                    except: pass
             if days_old == 9999:
                 scored.append({'item': item, 'distance_km': dist, 'days_old': 9999})
             else:
@@ -685,8 +696,8 @@ def _filter_by_distance_time(items: list, address: str, property_type: str = '�
                         dist_ok = (dist_tier == dist_tiers[-1])
                     else:
                         dist_ok = s['distance_km'] <= 0 or s['distance_km'] <= dist_tier
-                    # 未知日期只有最后档位才允许
-                    time_ok = (s['days_old'] == 9999 and time_tier == time_tiers[-1]) or (s['days_old'] <= time_tier)
+                    # 未知日期不通过，已知日期判断
+                    time_ok = s['days_old'] != 9999 and s['days_old'] <= time_tier
                     if dist_ok and time_ok:
                         seen.add(link)
                         item['distance_km'] = s['distance_km']
